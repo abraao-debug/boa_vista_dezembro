@@ -1,0 +1,34 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+venv
+ENV/
+env/
+.env
+*.pyc
+__pycache__/
+.venv/
+venv/
+db.sqlite3
+# --- Django ---
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+# Se você quiser que as assinaturas de teste NÃO subam para o servidor:
+media/assinaturas/* 
+# --- Editores e IDEs ---
+.vscode/
+.idea/
+*.swp
+*.bak
+
+# --- Sistema Operacional ---
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# --- WeasyPrint / Logs ---
+*.log
