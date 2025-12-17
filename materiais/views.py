@@ -2529,9 +2529,6 @@ def cotacao_agregado(request, solicitacao_id):
     if request.method == 'POST':
         try:
             fornecedor_id = request.POST.get('fornecedor')
-            
-            # --- LINHA CORRIGIDA ---
-            # O valor já vem no formato "8.33" do frontend, não precisa de limpeza.
             preco_unitario_str = request.POST.get('preco_unitario', '0')
             
             quantidade_total = Decimal(request.POST.get('quantidade_total'))
@@ -2546,29 +2543,39 @@ def cotacao_agregado(request, solicitacao_id):
             num_particoes = int(quantidade_total / quantidade_particao)
             
             with transaction.atomic():
-                sc_mae.status = 'em_cotacao'
-                sc_mae.save()
-
+                # Criamos as entregas fracionadas (Filhas)
                 for i in range(num_particoes):
                     sc_filha = SolicitacaoCompra.objects.create(
-                        solicitante=sc_mae.solicitante, obra=sc_mae.obra,
+                        solicitante=sc_mae.solicitante, 
+                        obra=sc_mae.obra,
                         data_necessidade=sc_mae.data_necessidade,
                         justificativa=f"Entrega {i+1}/{num_particoes} do pedido original {sc_mae.numero}.",
-                        status='aprovada',
-                        aprovador=request.user, data_aprovacao=timezone.now(),
+                        status='finalizada',
+                        aprovador=request.user, 
+                        data_aprovacao=timezone.now(),
                         sc_mae=sc_mae
                     )
+                    
                     item_filho = ItemSolicitacao.objects.create(
-                        solicitacao=sc_filha, item_catalogo=item_solicitado.item_catalogo,
-                        descricao=item_solicitado.descricao, unidade=item_solicitado.unidade,
-                        categoria=item_solicitado.categoria, quantidade=quantidade_particao
+                        solicitacao=sc_filha, 
+                        item_catalogo=item_solicitado.item_catalogo,
+                        descricao=item_solicitado.descricao, 
+                        unidade=item_solicitado.unidade,
+                        categoria=item_solicitado.categoria, 
+                        quantidade=quantidade_particao
                     )
+                    
                     cotacao = Cotacao.objects.create(
-                        solicitacao=sc_filha, fornecedor=fornecedor,
-                        vencedora=True, data_cotacao=timezone.now()
+                        solicitacao=sc_filha, 
+                        fornecedor=fornecedor,
+                        vencedora=True, 
+                        data_cotacao=timezone.now()
                     )
+                    
                     ItemCotacao.objects.create(
-                        cotacao=cotacao, item_solicitacao=item_filho, preco=preco_unitario
+                        cotacao=cotacao, 
+                        item_solicitacao=item_filho, 
+                        preco=preco_unitario
                     )
                     
                     RequisicaoMaterial.objects.create(
@@ -2577,13 +2584,21 @@ def cotacao_agregado(request, solicitacao_id):
                         valor_total=preco_unitario * quantidade_particao
                     )
 
-                    sc_filha.status = 'finalizada'
-                    sc_filha.save()
-            
-            sc_mae.status = 'finalizada'
-            sc_mae.save()
+                # --- CORREÇÃO DO BUG DE DUPLICIDADE ---
+                # Definimos a SC mãe como 'desativada' para que ela não apareça 
+                # nas listas de RMs pendentes ou cotações, pois o volume já foi 
+                # totalmente processado pelas SCs filhas acima.
+                sc_mae.status = 'desativada'
+                sc_mae.save()
 
-            messages.success(request, f"{num_particoes} RMs de agregado foram geradas com sucesso para a SC {sc_mae.numero}.")
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=sc_mae, 
+                    usuario=request.user, 
+                    acao="Processado como Agregado",
+                    detalhes=f"Pedido de {quantidade_total} total dividido em {num_particoes} RMs de {quantidade_particao} cada."
+                )
+
+            messages.success(request, f"{num_particoes} RMs de agregado geradas. A SC mãe {sc_mae.numero} foi arquivada.")
             return redirect('materiais:gerenciar_requisicoes')
 
         except Exception as e:

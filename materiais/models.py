@@ -185,6 +185,7 @@ class SolicitacaoCompra(models.Model):
         ('a_caminho', 'A Caminho'),
         ('recebida_parcial', 'Recebida Parcialmente'),  # <-- NOVO STATUS ADICIONADO
         ('recebida', 'Recebida'),
+        ('desativada', 'Desativada (Processada em Agregados)'),
     ]
     numero = models.CharField(max_length=100, unique=True, blank=True, verbose_name="Código")
     solicitante = models.ForeignKey(User, on_delete=models.CASCADE, related_name='solicitacoes')
