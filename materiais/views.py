@@ -1,0 +1,3013 @@
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.views.decorators.csrf import csrf_exempt
+from django.http import JsonResponse
+from django.utils import timezone
+from django.db.models import Count, Q, Sum, F, DecimalField, Prefetch
+from django.core.paginator import EmptyPage, PageNotAnInteger 
+from django.db.models.functions import Coalesce
+from django.views.decorators.csrf import csrf_exempt
+from difflib import SequenceMatcher
+from django.core.paginator import Paginator
+from .forms import SolicitacaoCompraForm
+from django.db.models import Case, When, Value, IntegerField
+from decimal import Decimal
+from . import rm_config
+import numpy as np
+from . import gemini_service
+from .models import (
+    User, SolicitacaoCompra, ItemSolicitacao, Fornecedor, ItemCatalogo, 
+    Obra, Cotacao, RequisicaoMaterial, HistoricoSolicitacao, 
+    ItemCotacao, CategoriaSC, EnvioCotacao, CategoriaItem, Tag, UnidadeMedida, DestinoEntrega,
+    Recebimento, ItemRecebido # <-- NOVOS MODELOS PRESENTES
+)
+import json # Adicione esta importação no topo do seu arquivo views.py
+from django.db import transaction
+from django.urls import reverse
+
+from django.conf import settings
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from weasyprint import HTML
+from . import rm_config
+
+
+#solicitacao = SolicitacaoCompra.objects.create(...)cadastrar_itens
+def similaridade_texto(a, b):  
+    """Calcula similaridade entre dois textos (0 a 1)"""  
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+
+def login_view(request):
+    if request.method == 'POST':
+        username = request.POST.get('username')
+        password = request.POST.get('password')
+        user = authenticate(request, username=username, password=password)
+        if user is not None:
+            login(request, user)
+            return redirect('materiais:dashboard')
+        else:
+            messages.error(request, 'Usuário ou senha inválidos.')
+    return render(request, 'materiais/login.html')
+
+
+def logout_view(request):
+    logout(request)
+    return redirect('materiais:login')
+
+
+@login_required
+def dashboard(request):
+    perfil = request.user.perfil
+    user_obras = request.user.obras.all()
+    
+    # --- LÓGICA DE FILTRAGEM CORRIGIDA ---
+    # O Diretor vê tudo. Os outros perfis veem apenas as obras associadas.
+    if perfil == 'diretor':
+        base_query = SolicitacaoCompra.objects.all()
+    elif perfil in ['almoxarife_escritorio', 'engenheiro', 'almoxarife_obra']:
+        if user_obras.exists():
+            base_query = SolicitacaoCompra.objects.filter(obra__in=user_obras)
+        else:
+            # Se não está associado a nenhuma obra, não vê nenhuma solicitação.
+            base_query = SolicitacaoCompra.objects.none()
+    else:
+        base_query = SolicitacaoCompra.objects.none()
+
+    aprovado_statuses = ['aprovada', 'aprovado_engenharia']
+    cotacao_statuses = ['em_cotacao', 'aguardando_resposta', 'cotacao_selecionada']
+    
+    context = {
+        'em_aberto': base_query.filter(status='pendente_aprovacao').count(),
+        'aprovado': base_query.filter(status__in=aprovado_statuses).count(),
+        'em_cotacao': base_query.filter(status__in=cotacao_statuses).count(),
+        'requisicoes': base_query.filter(status='finalizada').count(),
+        'a_caminho': base_query.filter(status__in=['a_caminho', 'recebida_parcial']).count(),
+        'entregue': base_query.filter(status='recebida').count(),
+    }
+
+    if perfil == 'almoxarife_obra':
+        return render(request, 'materiais/dashboard_almoxarife_obra.html', context)
+    elif perfil == 'engenheiro':
+        return render(request, 'materiais/dashboard_engenheiro.html', context)
+    elif perfil == 'almoxarife_escritorio':
+        return render(request, 'materiais/dashboard_almoxarife_escritorio.html', context)
+    elif perfil == 'diretor':
+        return render(request, 'materiais/dashboard_diretor.html', context)
+    else:
+        return render(request, 'materiais/dashboard.html')
+
+@login_required
+def lista_solicitacoes(request):
+    status_filtrado = request.GET.get('status', None)
+    user = request.user
+    
+    # --- LÓGICA DE FILTRAGEM CORRIGIDA (IDÊNTICA À DO DASHBOARD) ---
+    if user.perfil == 'diretor':
+        base_query = SolicitacaoCompra.objects.all()
+    
+    elif user.perfil in ['almoxarife_escritorio', 'almoxarife_obra', 'engenheiro']:
+        user_obras = user.obras.all()
+        if user_obras.exists():
+            base_query = SolicitacaoCompra.objects.filter(obra__in=user_obras)
+        else:
+            base_query = SolicitacaoCompra.objects.none()
+            
+    else:
+        base_query = SolicitacaoCompra.objects.none()
+
+    # Aplica o filtro de status (se houver) na query base
+    solicitacoes = base_query
+    if status_filtrado:
+        if status_filtrado == 'aprovada':
+            aprovado_statuses = ['aprovada', 'aprovado_engenharia']
+            solicitacoes = solicitacoes.filter(status__in=aprovado_statuses)
+        
+        elif status_filtrado == 'em_cotacao':
+            cotacao_statuses = ['em_cotacao', 'aguardando_resposta', 'cotacao_selecionada']
+            solicitacoes = solicitacoes.filter(status__in=cotacao_statuses)
+            
+        # Adiciona o filtro para o card "A Caminho" incluir os parciais
+        elif status_filtrado == 'a_caminho':
+            solicitacoes = solicitacoes.filter(status__in=['a_caminho', 'recebida_parcial'])
+            
+        else:
+            solicitacoes = solicitacoes.filter(status=status_filtrado)
+
+    # Monta o contexto final para o template
+    context = {
+        'solicitacoes': solicitacoes.select_related('obra').prefetch_related('requisicao').order_by('-data_criacao'),
+        'status_filtrado': status_filtrado,
+        'status_choices': dict(SolicitacaoCompra.STATUS_CHOICES)
+    }
+    return render(request, 'materiais/lista_solicitacoes.html', context)
+
+@login_required
+def minhas_solicitacoes(request):
+    # --- Toda a sua lógica de filtros e ordenação continua a mesma ---
+    termo_busca = request.GET.get('q', '').strip()
+    ano = request.GET.get('ano', '')
+    mes = request.GET.get('mes', '')
+    categoria_id = request.GET.get('categoria', '')
+    sort_by = request.GET.get('sort', 'data_criacao')
+    direction = request.GET.get('dir', 'desc')
+
+    base_query = SolicitacaoCompra.objects.filter(solicitante=request.user)
+    # ... (filtros Q(...) para busca) ...
+    if termo_busca:
+        base_query = base_query.filter(
+            Q(numero__icontains=termo_busca) | Q(nome_descritivo__icontains=termo_busca) |
+            Q(itens__descricao__icontains=termo_busca) | Q(obra__nome__icontains=termo_busca)
+        ).distinct()
+    if ano: base_query = base_query.filter(data_criacao__year=ano)
+    if mes: base_query = base_query.filter(data_criacao__month=mes)
+    if categoria_id: base_query = base_query.filter(categoria_sc_id=categoria_id)
+
+    # ... (lógica de anotação e ordenação) ...
+    base_query = base_query.annotate(item_count=Count('itens'))
+    status_order = Case(*[When(status=s[0], then=Value(i)) for i, s in enumerate(SolicitacaoCompra.STATUS_CHOICES)], output_field=IntegerField())
+    base_query = base_query.annotate(status_order=status_order)
+    valid_sort_fields = {'codigo': 'numero', 'obra': 'obra__nome', 'data_criacao': 'data_criacao', 'status': 'status_order', 'itens': 'item_count'}
+    order_field = valid_sort_fields.get(sort_by, 'data_criacao')
+    order = f'-{order_field}' if direction == 'desc' else order_field
+    solicitacoes_list = base_query.select_related('obra').order_by(order)
+
+    # --- INÍCIO DA LÓGICA DE PAGINAÇÃO ---
+    per_page = request.GET.get('per_page', 10) # Padrão de 10 itens por página
+    paginator = Paginator(solicitacoes_list, per_page)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+    # --- FIM DA LÓGICA DE PAGINAÇÃO ---
+
+    context = {
+        'solicitacoes': page_obj, # IMPORTANTE: Enviamos o objeto da página, não mais a lista completa
+        'per_page': per_page,
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
+        'meses_opcoes': range(1, 13),
+        'filtros_aplicados': { 'q': termo_busca, 'ano': ano, 'mes': mes, 'categoria': categoria_id, },
+        'current_sort': sort_by,
+        'current_dir': direction,
+    }
+    
+    return render(request, 'materiais/minhas_solicitacoes.html', context)
+
+
+@login_required
+def nova_solicitacao(request):
+    if request.method == 'POST':
+        try:
+            obra_id = request.POST.get('obra')
+            data_necessidade = request.POST.get('data_necessidade')
+            justificativa = request.POST.get('justificativa')
+            is_emergencial = request.POST.get('is_emergencial') == 'on'
+            categoria_sc_id = request.POST.get('categoria_sc')
+            destino_id = request.POST.get('destino') # Captura o novo campo
+            
+            itens_json = request.POST.get('itens_json', '[]')
+            itens_data = json.loads(itens_json)
+
+            if not all([obra_id, data_necessidade, itens_data]):
+                messages.error(request, 'Erro: Obra, data de necessidade e ao menos um item são obrigatórios.')
+                return redirect('materiais:nova_solicitacao')
+
+            obra = get_object_or_404(Obra, id=obra_id)
+            status_inicial = 'aprovada' if request.user.perfil in ['engenheiro', 'almoxarife_escritorio', 'diretor'] else 'pendente_aprovacao'
+
+            with transaction.atomic():
+                solicitacao = SolicitacaoCompra.objects.create(
+                    solicitante=request.user, obra=obra, data_necessidade=data_necessidade,
+                    justificativa=justificativa, is_emergencial=is_emergencial,
+                    status=status_inicial, categoria_sc_id=categoria_sc_id,
+                    destino_id=destino_id if destino_id else None # Salva o novo campo
+                )
+                HistoricoSolicitacao.objects.create(solicitacao=solicitacao, usuario=request.user, acao="Solicitação Criada")
+
+                for item_data in itens_data:
+                    item_catalogo = get_object_or_404(ItemCatalogo, id=item_data.get('item_id'))
+                    ItemSolicitacao.objects.create(
+                        solicitacao=solicitacao,
+                        item_catalogo=item_catalogo,
+                        descricao=item_catalogo.descricao,
+                        unidade=item_catalogo.unidade.sigla,
+                        categoria=str(item_catalogo.categoria),
+                        quantidade=float(item_data.get('quantidade')),
+                        observacoes=item_data.get('observacao')
+                    )
+                
+                if request.user.perfil in ['engenheiro', 'almoxarife_escritorio']:
+                    solicitacao.aprovador = request.user
+                    solicitacao.data_aprovacao = timezone.now()
+                    solicitacao.save()
+                    HistoricoSolicitacao.objects.create(solicitacao=solicitacao, usuario=request.user, acao="Aprovada na Criação")
+                
+                messages.success(request, f'Solicitação {solicitacao.numero} criada com sucesso!')
+                return redirect('materiais:lista_solicitacoes')
+
+        except Exception as e:
+            messages.error(request, f'Ocorreu um erro ao processar sua solicitação: {e}')
+            return redirect('materiais:nova_solicitacao')
+
+    if request.user.perfil == 'almoxarife_escritorio':
+        obras = Obra.objects.filter(ativa=True).order_by('nome')
+    else:
+        obras = request.user.obras.filter(ativa=True).order_by('nome')
+    
+    context = {
+        'obras': obras,
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
+        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome'),
+        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
+    }
+    
+    return render(request, 'materiais/nova_solicitacao.html', context)
+#solicitacao.save()
+@login_required
+def lista_fornecedores(request):
+    return render(request, 'materiais/lista_fornecedores.html')
+
+
+@login_required
+def analisar_solicitacoes(request):
+    if request.user.perfil != 'engenheiro':
+        messages.error(request, 'Acesso negado. Apenas engenheiros podem analisar solicitações.')
+        return redirect('materiais:dashboard')
+
+    solicitacoes_pendentes = SolicitacaoCompra.objects.filter(
+        status='pendente_aprovacao'
+    ).order_by('-data_criacao')
+
+    return render(request, 'materiais/analisar_solicitacoes.html', {
+        'solicitacoes_pendentes': solicitacoes_pendentes
+    })
+
+
+@login_required
+def aprovar_solicitacao(request, solicitacao_id):
+    if request.user.perfil != 'engenheiro':
+        return JsonResponse({'success': False, 'message': 'Acesso negado'})
+    
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    
+    if solicitacao.status != 'pendente_aprovacao':
+        return JsonResponse({'success': False, 'message': 'Solicitação não pode ser aprovada'})
+    
+    # --- MUDANÇA PARA O NOVO STATUS ---
+    solicitacao.status = 'aprovado_engenharia'
+    solicitacao.aprovador = request.user
+    solicitacao.data_aprovacao = timezone.now()
+    solicitacao.save()
+    
+    HistoricoSolicitacao.objects.create(
+        solicitacao=solicitacao,
+        usuario=request.user,
+        acao="Aprovada pelo Engenheiro",
+        detalhes="Todos os itens foram aprovados."
+    )
+    
+    messages.success(request, f'Solicitação {solicitacao.numero} aprovada com sucesso!')
+    return JsonResponse({'success': True, 'message': 'Solicitação aprovada!'})
+
+@login_required
+def rejeitar_solicitacao(request, solicitacao_id):
+    if request.user.perfil != 'engenheiro':
+        return JsonResponse({'success': False, 'message': 'Acesso negado'})
+    
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    
+    if solicitacao.status != 'pendente_aprovacao':
+        return JsonResponse({'success': False, 'message': 'Solicitação não pode ser rejeitada'})
+    
+    solicitacao.status = 'rejeitada'
+    solicitacao.aprovador = request.user
+    solicitacao.data_aprovacao = timezone.now()
+    
+    observacoes = request.POST.get('observacoes', 'Rejeitada pelo engenheiro')
+    solicitacao.observacoes_aprovacao = observacoes
+    solicitacao.save()
+    
+    # --- REGISTRO DE HISTÓRICO ---
+    HistoricoSolicitacao.objects.create(
+        solicitacao=solicitacao,
+        usuario=request.user,
+        acao="Solicitação Rejeitada",
+        detalhes=observacoes
+    )
+    # --- FIM DO REGISTRO ---
+    
+    messages.success(request, f'Solicitação {solicitacao.numero} rejeitada!')
+    return JsonResponse({'success': True, 'message': 'Solicitação rejeitada!'})
+
+    
+@login_required
+def editar_solicitacao(request, solicitacao_id):
+    # View placeholder para a futura tela de edição.
+    # No momento, ela apenas exibe uma mensagem e redireciona.
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    messages.info(request, f'A funcionalidade "Editar" para a SC {solicitacao.numero} está em desenvolvimento.')
+    
+    # Redireciona de volta para a página mais relevante
+    if request.user.perfil == 'almoxarife_escritorio':
+        return redirect('materiais:gerenciar_cotacoes')
+    
+@login_required
+def marcar_em_cotacao(request, solicitacao_id):
+    # CORREÇÃO: Adicionado 'diretor' à verificação de perfil
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    
+    status_permitidos = ['aprovada', 'aprovado_engenharia']
+    if solicitacao.status not in status_permitidos:
+        messages.error(request, 'Esta solicitação não está em um status válido para iniciar a cotação.')
+        return redirect('materiais:gerenciar_cotacoes')
+
+    solicitacao.status = 'em_cotacao'
+    solicitacao.save()
+    
+    HistoricoSolicitacao.objects.create(
+        solicitacao=solicitacao,
+        usuario=request.user,
+        acao="Início da Cotação",
+        detalhes="Processo de cotação com fornecedores iniciado."
+    )
+
+    messages.success(request, f'O processo de cotação para a SC "{solicitacao.nome_descritivo}" foi iniciado!')
+    
+    return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=em-cotacao")
+
+@login_required
+def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+        
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    fornecedor_selecionado = get_object_or_404(Fornecedor, id=fornecedor_id)
+    # Pega o envio original para buscar os dados de pagamento
+    envio_original = EnvioCotacao.objects.filter(solicitacao=solicitacao, fornecedor=fornecedor_selecionado).first()
+
+    if request.method == 'POST':
+        # --- CAPTURANDO NOVOS CAMPOS ---
+        prazo_entrega = request.POST.get('prazo_entrega')
+        condicao_pagamento = request.POST.get('condicao_pagamento')
+        observacoes = request.POST.get('observacoes')
+        valor_frete_str = request.POST.get('valor_frete', '0').replace('.', '').replace(',', '.')
+        endereco_entrega_id = request.POST.get('endereco_entrega')
+
+        with transaction.atomic():
+            nova_cotacao, created = Cotacao.objects.update_or_create(
+                solicitacao=solicitacao, 
+                fornecedor=fornecedor_selecionado, 
+                defaults={
+                    'prazo_entrega': prazo_entrega,
+                    'condicao_pagamento': condicao_pagamento, 
+                    'observacoes': observacoes,
+                    # --- SALVANDO NOVOS CAMPOS ---
+                    'valor_frete': float(valor_frete_str) if valor_frete_str else 0.0,
+                    'endereco_entrega_id': endereco_entrega_id if endereco_entrega_id else None
+                }
+            )
+
+            nova_cotacao.itens_cotados.all().delete()
+            
+            itens_cotados_count = 0
+            for item_solicitado in envio_original.itens.all():
+                preco_str = request.POST.get(f'preco_{item_solicitado.id}')
+                if preco_str:
+                    preco_limpo = preco_str.replace('R$', '').strip().replace('.', '').replace(',', '.')
+                    try:
+                        preco_val = float(preco_limpo)
+                        if preco_val > 0:
+                            ItemCotacao.objects.create(cotacao=nova_cotacao, item_solicitacao=item_solicitado, preco=preco_val)
+                            itens_cotados_count += 1
+                    except (ValueError, TypeError): continue
+            
+            if itens_cotados_count == 0:
+                nova_cotacao.delete()
+                messages.error(request, "Nenhum preço válido foi informado. A cotação não foi registrada.")
+            else:
+                total_enviado = solicitacao.envios_cotacao.count()
+                total_recebido = solicitacao.cotacoes.count()
+                
+                historico_detalhes = f"Preços do fornecedor {fornecedor_selecionado.nome_fantasia} foram registrados."
+                if total_enviado > 0 and total_enviado == total_recebido:
+                    solicitacao.status = 'cotacao_selecionada'
+                    solicitacao.save()
+                    historico_detalhes += " Todas as cotações solicitadas foram recebidas. SC movida para análise."
+                
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao, usuario=request.user, acao="Cotação Registrada",
+                    detalhes=historico_detalhes
+                )
+                messages.success(request, f"Cotação para {fornecedor_selecionado.nome_fantasia} registrada com sucesso!")
+                return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
+
+    context = {
+        'solicitacao': solicitacao,
+        'fornecedor_selecionado': fornecedor_selecionado,
+        'envio_cotacao': envio_original,
+        'itens_para_cotar': envio_original.itens.all() if envio_original else [],
+        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome')
+    }
+    return render(request, 'materiais/iniciar_cotacao.html', context)
+
+@login_required
+def selecionar_cotacao_vencedora(request, cotacao_id):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+        
+    if request.method == 'POST':
+        cotacao_vencedora = get_object_or_404(Cotacao, id=cotacao_id)
+        solicitacao = cotacao_vencedora.solicitacao
+
+        # --- INÍCIO DA CORREÇÃO DE SEGURANÇA ---
+        # ANTES de fazer qualquer coisa, verifica se uma RM já não foi criada para esta SC.
+        # O 'hasattr(solicitacao, 'requisicao')' checa se a relação OneToOne já existe.
+        if hasattr(solicitacao, 'requisicao'):
+            messages.warning(request, f'A Requisição de Material para a SC {solicitacao.numero} já foi gerada anteriormente.')
+            return redirect('materiais:gerenciar_requisicoes')
+        # --- FIM DA CORREÇÃO DE SEGURANÇA ---
+
+        with transaction.atomic():
+            # Apaga as outras cotações e envios que não foram vencedores
+            solicitacao.cotacoes.exclude(pk=cotacao_vencedora.pk).delete()
+            solicitacao.envios_cotacao.all().delete()
+            
+            # Marca a cotação como vencedora
+            cotacao_vencedora.vencedora = True
+            cotacao_vencedora.save()
+
+            # Agora, cria a nova RM com segurança
+            nova_rm = RequisicaoMaterial.objects.create(
+                solicitacao_origem=solicitacao,
+                cotacao_vencedora=cotacao_vencedora,
+                valor_total=cotacao_vencedora.valor_total,
+                status_assinatura='pendente' 
+            )
+
+            # Atualiza o status da SC para finalizada
+            solicitacao.status = 'finalizada'
+            solicitacao.save()
+            
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao, usuario=request.user, acao="RM Gerada",
+                detalhes=f"Cotação de {cotacao_vencedora.fornecedor.nome_fantasia} selecionada. RM {nova_rm.numero} criada."
+            )
+            messages.success(request, f"Cotação selecionada! RM {nova_rm.numero} foi gerada e está pendente de assinaturas.")
+    
+    return redirect('materiais:gerenciar_requisicoes')
+
+@login_required
+def rejeitar_cotacao(request, cotacao_id):
+    if request.method == 'POST':
+        cotacao = get_object_or_404(Cotacao, id=cotacao_id)
+        solicitacao = cotacao.solicitacao # Capturamos a SC antes de apagar a cotação
+        fornecedor_nome = cotacao.fornecedor.nome_fantasia
+
+        # Apaga a cotação
+        cotacao.delete()
+
+        historico_detalhes = f"A cotação do fornecedor {fornecedor_nome} foi rejeitada e removida."
+        
+        # --- NOVA LÓGICA DE VERIFICAÇÃO DE STATUS ---
+        # Verifica se a SC ficou sem nenhuma outra cotação registrada
+        if not solicitacao.cotacoes.exists():
+            # Se não houver mais cotações, reverte o status para aguardar novas cotações
+            solicitacao.status = 'aguardando_resposta'
+            solicitacao.save()
+            historico_detalhes += " A SC retornou ao estado 'Aguardando Resposta' pois não há outras cotações."
+
+        HistoricoSolicitacao.objects.create(
+            solicitacao=solicitacao,
+            usuario=request.user,
+            acao="Cotação Rejeitada",
+            detalhes=historico_detalhes
+        )
+
+        messages.warning(request, f"A cotação do fornecedor {fornecedor_nome} foi rejeitada.")
+        
+        # Redireciona para a aba correta dependendo do que aconteceu
+        if solicitacao.status == 'aguardando_resposta':
+             return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=aguardando")
+        else:
+            return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
+
+    return redirect('materiais:gerenciar_cotacoes')
+
+'''@login_required
+def receber_material(request):
+    if request.user.perfil != 'almoxarife_obra':
+        messages.error(request, 'Acesso negado. Apenas almoxarife da obra pode receber materiais.')
+        return redirect('materiais:dashboard')
+
+    scs_finalizadas = SolicitacaoCompra.objects.filter(
+        status='finalizada'
+    ).select_related('obra', 'solicitante').prefetch_related('itens').order_by('-data_criacao')
+
+    return render(request, 'materiais/receber_material.html', {
+        'scs_finalizadas': scs_finalizadas
+    })'''
+
+
+'''@login_required
+def iniciar_recebimento(request, solicitacao_id):
+    if request.user.perfil != 'almoxarife_obra':
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id, status='finalizada')
+
+    if request.method == 'POST':
+        from django.db import transaction
+        
+        with transaction.atomic():
+            ultimo_rm = RequisicaoMaterial.objects.order_by('-id').first()
+            if ultimo_rm:
+                numero_rm = f"RM-{str(ultimo_rm.id + 1).zfill(3)}"
+            else:
+                numero_rm = "RM-001"
+            
+            rm = RequisicaoMaterial.objects.create(
+                numero=numero_rm,
+                solicitacao_origem=solicitacao,
+                recebedor=request.user,
+                data_recebimento=timezone.now().date(),
+                observacoes=request.POST.get('observacoes_gerais', '')
+            )
+            
+            quantidades_recebidas = request.POST.getlist('quantidade_recebida[]')
+            observacoes_recebimento = request.POST.getlist('observacoes_recebimento[]')
+            itens_processados = 0
+
+            for i, item in enumerate(solicitacao.itens.all()):
+                if i < len(quantidades_recebidas) and quantidades_recebidas[i]:
+                    quantidade_recebida = float(quantidades_recebidas[i])
+                    if quantidade_recebida > 0:
+                        ItemRecebimento.objects.create(
+                            requisicao=rm,
+                            item_original=item,
+                            quantidade_recebida=quantidade_recebida,
+                            observacoes=observacoes_recebimento[i] if i < len(observacoes_recebimento) else ''
+                        )
+                        itens_processados += 1
+            
+            if itens_processados > 0:
+                solicitacao.status = 'recebida'
+                solicitacao.recebedor = request.user
+                solicitacao.data_recebimento = timezone.now()
+                solicitacao.save()
+                
+                # --- REGISTRO DE HISTÓRICO ---
+                # Este bloco está corretamente indentado dentro do "if"
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao,
+                    usuario=request.user,
+                    acao="Material Recebido",
+                    detalhes=f"Recebimento parcial/total registrado na RM {rm.numero}."
+                )
+                # --- FIM DO REGISTRO ---
+                
+                messages.success(request, f'✅ Material recebido com sucesso! RM {numero_rm} criada.')
+                return redirect('materiais:receber_material')
+            else:
+                rm.delete()
+                messages.error(request, 'Informe pelo menos um item recebido.')
+
+    return render(request, 'materiais/iniciar_recebimento.html', {
+        'solicitacao': solicitacao
+    })'''
+
+
+
+
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger 
+# ... (outras imports) ...
+
+
+# ... (outras funções) ...
+
+
+@login_required
+def historico_recebimentos(request):
+    # Lista de perfis permitidos a VISUALIZAR o Histórico de Recebimentos
+    perfis_permitidos = ['almoxarife_obra', 'engenheiro', 'almoxarife_escritorio', 'diretor']
+
+    if request.user.perfil not in perfis_permitidos:
+        messages.error(request, 'Acesso negado. Apenas Almoxarife (Obra/Escritório), Engenheiro e Diretor podem visualizar este histórico.')
+        return redirect('materiais:dashboard')
+
+    # --- INÍCIO DA LÓGICA DE FILTROS, ORDENAÇÃO E PAGINAÇÃO ---
+    
+    # 1. Captura de Parâmetros
+    termo_busca = request.GET.get('q', '').strip()
+    ano = request.GET.get('ano', '')
+    mes = request.GET.get('mes', '')
+    categoria_id = request.GET.get('categoria', '')
+    per_page_str = request.GET.get('per_page', '10') # Padrão 10 itens por página
+    sort_by = request.GET.get('sort', '-data_recebimento') # Ordenação padrão: mais recente
+    sort_dir = request.GET.get('dir', 'desc')
+    page = request.GET.get('page')
+    
+    try:
+        per_page = int(per_page_str)
+        if per_page <= 0: per_page = 10
+    except ValueError:
+        per_page = 10
+        
+    # Ajusta a ordenação para o Django
+    if sort_dir == 'desc' and sort_by[0] != '-':
+        sort_key = f'-{sort_by}'
+    elif sort_dir == 'asc' and sort_by[0] == '-':
+        sort_key = sort_by[1:]
+    else:
+        sort_key = sort_by
+        
+    # 2. Construção da Query Base (OTIMIZAÇÃO PARA NOVO DESIGN)
+    base_query = Recebimento.objects.filter(
+        recebedor=request.user
+    ).select_related(
+        'solicitacao__obra', 
+        'solicitacao__categoria_sc',
+        # Pré-carrega a Requisição, Cotação e Fornecedor para evitar N+1 queries
+        'solicitacao__requisicao',
+        'solicitacao__requisicao__cotacao_vencedora',
+        'solicitacao__requisicao__cotacao_vencedora__fornecedor',
+    ).prefetch_related('itens_recebidos__item_solicitado') # Pré-carrega os itens recebidos
+
+    # 3. Aplicação dos Filtros
+    recebimentos_feitos = base_query
+    
+    # Filtro de Busca Rápida (q): Busca em RM, SC e Itens
+    if termo_busca:
+        recebimentos_feitos = recebimentos_feitos.filter(
+            Q(solicitacao__numero__icontains=termo_busca) |
+            Q(solicitacao__requisicao__numero__icontains=termo_busca) |
+            Q(itens_recebidos__item_solicitado__descricao__icontains=termo_busca)
+        ).distinct()
+    
+    # Filtros por Ano/Mês (data do recebimento)
+    if ano:
+        recebimentos_feitos = recebimentos_feitos.filter(data_recebimento__year=ano)
+    
+    if mes:
+        recebimentos_feitos = recebimentos_feitos.filter(data_recebimento__month=mes)
+        
+    # Filtro por Categoria da SC
+    if categoria_id:
+        recebimentos_feitos = recebimentos_feitos.filter(solicitacao__categoria_sc_id=categoria_id)
+
+    # 4. Ordenação e Paginação
+    recebimentos_feitos = recebimentos_feitos.order_by(sort_key)
+    
+    paginator = Paginator(recebimentos_feitos, per_page)
+    try:
+        recebimentos_paginados = paginator.page(page)
+    except PageNotAnInteger:
+        recebimentos_paginados = paginator.page(1)
+    except EmptyPage:
+        recebimentos_paginados = paginator.page(paginator.num_pages)
+
+    # --- FIM DA LÓGICA DE FILTROS, ORDENAÇÃO E PAGINAÇÃO ---
+
+    context = {
+        'materiais_recebidos': recebimentos_paginados,
+        
+        # Variáveis para filtros/paginação
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
+        'meses_opcoes': range(1, 13),
+        'filtros_aplicados': {
+            'q': termo_busca,
+            'ano': ano,
+            'mes': mes,
+            'categoria': categoria_id,
+        },
+        'per_page_options': [10, 25, 50, 100],
+        'per_page': per_page,
+        'current_sort': sort_by.lstrip('-'),
+        'current_dir': sort_dir,
+    }
+    return render(request, 'materiais/historico_recebimentos.html', context)
+
+
+@login_required
+def cadastrar_itens(request):
+    # PERMISSÃO AMPLIADA PARA ENGENHEIRO E ALMOXARIFE DE OBRA
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor', 'engenheiro','almoxarife_obra']:
+        messages.error(request, 'Acesso negado. Apenas o escritório ou diretoria pode cadastrar itens.')
+        return redirect('materiais:dashboard')
+
+    # --- INÍCIO DA LÓGICA DE FILTROS, ORDENAÇÃO E PAGINAÇÃO ---
+    termo_busca = request.GET.get('q', '').strip()
+    sort_by = request.GET.get('sort', 'descricao') # Padrão: descrição
+    direction = request.GET.get('dir', 'asc')       # Padrão: A-Z
+    page = request.GET.get('page')
+    per_page_str = request.GET.get('per_page', '25') # Padrão: 25 itens
+
+    try:
+        per_page = int(per_page_str)
+        if per_page not in [10, 25, 50, 100]:
+            per_page = 25
+    except ValueError:
+        per_page = 25
+    
+    # 1. Query Base
+    # Uso de select_related para otimizar as buscas de Categoria, Subcategoria e Unidade
+    base_query = ItemCatalogo.objects.filter(
+        # Filtra apenas itens que têm subcategoria (para não aparecer categorias "mães" acidentais)
+        categoria__categoria_mae__isnull=False 
+    ).select_related(
+        'categoria__categoria_mae', 
+        'unidade'
+    )
+    
+    # 2. Aplica Busca (q)
+    if termo_busca:
+        base_query = base_query.filter(
+            Q(codigo__icontains=termo_busca) |
+            Q(descricao__icontains=termo_busca) |
+            Q(categoria__nome__icontains=termo_busca) | # Subcategoria
+            Q(categoria__categoria_mae__nome__icontains=termo_busca) | # Categoria Principal
+            Q(unidade__sigla__icontains=termo_busca)
+        ).distinct() # Distinct para evitar duplicidade causada pelo Q
+    
+    # 3. Aplica Ordenação
+    # Mapeamento de campos de front-end para campos do modelo
+    valid_sort_fields = {
+        'codigo': 'codigo',
+        'descricao': 'descricao',
+        'categoria_mae': 'categoria__categoria_mae__nome',
+        'subcategoria': 'categoria__nome',
+        'unidade': 'unidade__sigla',
+        'ativo': 'ativo',
+    }
+    
+    order_field = valid_sort_fields.get(sort_by, 'descricao')
+    order = f'-{order_field}' if direction == 'desc' else order_field
+
+    itens_list = base_query.order_by(order)
+    
+    # 4. Paginação
+    paginator = Paginator(itens_list, per_page)
+    try:
+        itens_paginados = paginator.page(page)
+    except PageNotAnInteger:
+        itens_paginados = paginator.page(1)
+    except EmptyPage:
+        itens_paginados = paginator.page(paginator.num_pages)
+    
+    # --- FIM DA LÓGICA DE FILTROS, ORDENAÇÃO E PAGINAÇÃO ---
+
+    # AJUSTE: Filtra apenas categorias principais que TÊM subcategorias
+    categorias_principais_list = CategoriaItem.objects.filter(categoria_mae__isnull=True, subcategorias__isnull=False).distinct().order_by('nome')
+    
+    unidades_list = UnidadeMedida.objects.all().order_by('nome')
+    tags_list = Tag.objects.all().order_by('nome')
+
+    if request.method == 'POST':
+        subcategoria_id = request.POST.get('subcategoria')
+        descricao = request.POST.get('descricao')
+        unidade_id = request.POST.get('unidade')
+        tags_ids = request.POST.getlist('tags')
+        status_ativo = request.POST.get('status') == 'on'
+        forcar_cadastro = request.POST.get('forcar_cadastro') == 'true'
+        
+        erros = []
+        if not descricao:
+            erros.append("O campo 'Descrição do Item' é obrigatório.")
+        if not request.POST.get('categoria'):
+            erros.append("O campo 'Categoria' é obrigatório.")
+        if not subcategoria_id:
+            erros.append("O campo 'Subcategoria' é obrigatório.")
+        if not unidade_id:
+            erros.append("O campo 'Unidade de Medida' é obrigatório.")
+
+        # Contexto de erro (Note que 'itens' usa a lista paginada)
+        contexto_erro = {
+            'itens': itens_paginados, 
+            'categorias_principais': categorias_principais_list,
+            'unidades': unidades_list,
+            'tags': tags_list,
+            'form_data': request.POST,
+            'search_query': termo_busca,
+            'current_sort': sort_by,
+            'current_dir': direction,
+            'per_page': per_page,
+            'per_page_options': [10, 25, 50, 100],
+        }
+        
+        # O backend verifica o submit forçado para permitir duplicação
+        if ItemCatalogo.objects.filter(descricao__iexact=descricao).exists() and not forcar_cadastro:
+            messages.error(request, f'❌ Já existe um item com a descrição "{descricao}"!')
+            return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
+        
+        if erros:
+            for erro in erros:
+                messages.error(request, erro)
+            return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
+        
+        try:
+            categoria_final_obj = get_object_or_404(CategoriaItem, id=subcategoria_id)
+            unidade_obj = get_object_or_404(UnidadeMedida, id=unidade_id)
+            
+            novo_item = ItemCatalogo(
+                descricao=descricao,
+                categoria=categoria_final_obj,
+                unidade=unidade_obj,
+                ativo=status_ativo
+            )
+            novo_item.save()
+            
+            if tags_ids:
+                novo_item.tags.set(tags_ids)
+
+            messages.success(request, f'✅ Item "{novo_item.descricao}" (Código: {novo_item.codigo}) cadastrado com sucesso!')
+            return redirect('materiais:cadastrar_itens')
+        except Exception as e:
+            messages.error(request, f'Ocorreu um erro ao salvar o item: {e}')
+            return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
+
+
+    # Contexto para a renderização GET (e em caso de erro)
+    context = {
+        'itens': itens_paginados, # Objeto Paginado
+        'categorias_principais': categorias_principais_list,
+        'unidades': unidades_list,
+        'tags': tags_list,
+        'search_query': termo_busca,
+        'current_sort': sort_by,
+        'current_dir': direction,
+        'per_page': per_page,
+        'per_page_options': [10, 25, 50, 100],
+    }
+    return render(request, 'materiais/cadastrar_itens.html', context)
+
+@login_required
+def cadastrar_obras(request):
+    # PERMISSÃO CORRIGIDA PARA INCLUIR O DIRETOR
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado. Apenas o escritório ou diretoria pode cadastrar obras.')
+        return redirect('materiais:dashboard')
+
+    if request.method == 'POST':
+        nome = request.POST.get('nome')
+        endereco = request.POST.get('endereco')
+        
+        if nome:
+            Obra.objects.create(
+                nome=nome,
+                endereco=endereco or ''
+            )
+            messages.success(request, f'Obra {nome} cadastrada com sucesso!')
+            return redirect('materiais:cadastrar_obras')
+
+    obras = Obra.objects.all().order_by('nome')
+    return render(request, 'materiais/cadastrar_obras.html', {
+        'obras': obras
+    })
+
+
+@login_required
+def gerenciar_fornecedores(request):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    if request.method == 'POST':
+        cnpj = request.POST.get('cnpj')
+        produtos_ids_string = request.POST.get('produtos_fornecidos', '')
+        produtos_ids = [pid.strip() for pid in produtos_ids_string.split(',') if pid.strip()]
+
+        if Fornecedor.objects.filter(cnpj=cnpj).exists():
+            messages.error(request, f'❌ CNPJ {cnpj} já cadastrado!')
+        else:
+            try:
+                novo_fornecedor = Fornecedor.objects.create(
+                    nome_fantasia=request.POST.get('nome_fantasia'),
+                    razao_social=request.POST.get('razao_social'),
+                    cnpj=cnpj,
+                    tipo=request.POST.get('tipo'),
+                    email=request.POST.get('email'),
+                    contato_nome=request.POST.get('contato_nome'),
+                    contato_telefone=request.POST.get('contato_telefone'),
+                    contato_whatsapp=request.POST.get('contato_whatsapp'),
+                    cep=request.POST.get('cep'),
+                    logradouro=request.POST.get('logradouro'),
+                    numero=request.POST.get('numero'),
+                    bairro=request.POST.get('bairro'),
+                    cidade=request.POST.get('cidade'),
+                    estado=(request.POST.get('estado') or '').upper(),
+                    ativo=True
+                )
+
+                if produtos_ids:
+                    categorias = CategoriaItem.objects.filter(id__in=produtos_ids)
+                    if categorias.count() != len(produtos_ids):
+                        messages.warning(request, 'Algumas categorias selecionadas não foram encontradas.')
+                    novo_fornecedor.produtos_fornecidos.set(categorias)
+
+                messages.success(request, f'✅ Fornecedor {novo_fornecedor.nome_fantasia} cadastrado com sucesso!')
+                return redirect('materiais:gerenciar_fornecedores')
+            except Exception as e:
+                messages.error(request, f'Ocorreu um erro ao cadastrar: {e}')
+
+    context = {
+        'fornecedores': Fornecedor.objects.all().order_by('nome_fantasia'),
+        # apenas categorias principais, como você já fazia
+        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome')
+    }
+    return render(request, 'materiais/gerenciar_fornecedores.html', context)
+@login_required
+def finalizar_compra(request, solicitacao_id):
+    if request.user.perfil != 'almoxarife_escritorio':
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id, status='cotacao_selecionada')
+    cotacao_selecionada = solicitacao.cotacoes.filter(selecionada=True).first()
+
+    if request.method == 'POST':
+        observacoes_finalizacao = request.POST.get('observacoes_finalizacao', '')
+        
+        solicitacao.status = 'finalizada'
+        # As observações da finalização podem ser salvas em um campo apropriado se desejar
+        # solicitacao.observacoes_aprovacao = observacoes_finalizacao
+        solicitacao.save()
+
+        # --- REGISTRO DE HISTÓRICO ---
+        HistoricoSolicitacao.objects.create(
+            solicitacao=solicitacao,
+            usuario=request.user,
+            acao="Compra Finalizada",
+            detalhes=f"Pedido de compra efetuado com o fornecedor {cotacao_selecionada.fornecedor.nome}. Observações: {observacoes_finalizacao}"
+        )
+        # --- FIM DO REGISTRO ---
+        
+        messages.success(request, f'✅ Compra da SC {solicitacao.numero} finalizada com sucesso!')
+        return redirect('materiais:gerenciar_cotacoes') # Melhor redirecionar para a lista de cotações
+
+    return render(request, 'materiais/finalizar_compra.html', {
+        'solicitacao': solicitacao,
+        'cotacao_selecionada': cotacao_selecionada
+    })
+
+@login_required
+def selecionar_item_cotado(request, item_cotado_id):
+    if request.method == 'POST' and request.user.perfil == 'almoxarife_escritorio':
+        item_vencedor = get_object_or_404(ItemCotacao, id=item_cotado_id)
+        item_solicitado_original = item_vencedor.item_solicitacao
+
+        # Garante que estamos trabalhando com a solicitação de compra correta
+        solicitacao_principal = item_solicitado_original.solicitacao
+
+        with transaction.atomic():
+            # Desmarca qualquer outro item vencedor para esta mesma solicitação de item
+            item_solicitado_original.itens_cotados.update(selecionado=False)
+            
+            # Marca o item selecionado como vencedor
+            item_vencedor.selecionado = True
+            item_vencedor.save()
+            
+            # Atualiza status da solicitação principal para 'Cotação Selecionada'
+            # Isso indica que pelo menos um item já tem um vencedor.
+            if solicitacao_principal.status != 'cotacao_selecionada':
+                solicitacao_principal.status = 'cotacao_selecionada'
+                solicitacao_principal.save()
+
+            # Adiciona ao histórico
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao_principal,
+                usuario=request.user,
+                acao="Item de Cotação Selecionado",
+                detalhes=f"Item '{item_solicitado_original.descricao}' do fornecedor '{item_vencedor.cotacao.fornecedor.nome}' foi selecionado como vencedor."
+            )
+
+        messages.success(request, f"Item '{item_solicitado_original.descricao}' do fornecedor '{item_vencedor.cotacao.fornecedor.nome}' selecionado!")
+
+    # Redireciona de volta para a tela de gerenciamento, focando na aba correta.
+    return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
+
+
+@login_required
+def api_solicitacao_itens(request, solicitacao_id):
+    """API para buscar itens de uma solicitação (usado na aprovação parcial e na cotação)"""
+    # PERMISSÃO CORRIGIDA PARA INCLUIR O DIRETOR
+    if request.user.perfil not in ['engenheiro', 'almoxarife_escritorio', 'diretor']:
+        return JsonResponse({'success': False, 'message': 'Acesso negado'})
+    
+    try:
+        solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+        
+        itens_data = []
+        for item in solicitacao.itens.all():
+            itens_data.append({
+                'id': item.id,
+                'descricao': item.descricao,
+                'quantidade': float(item.quantidade),
+                'unidade': item.unidade,
+                'observacoes': item.observacoes or ''
+            })
+        
+        return JsonResponse({
+            'success': True,
+            'itens': itens_data,
+            'solicitacao': {
+                'id': solicitacao.id,
+                'numero': solicitacao.numero,
+                'obra': solicitacao.obra.nome,
+                'solicitante': solicitacao.solicitante.get_full_name() or solicitacao.solicitante.username
+            }
+        })
+    
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
+@login_required
+def aprovar_parcial(request, solicitacao_id):
+    """Função para aprovação parcial de solicitações"""
+    if request.user.perfil != 'engenheiro':
+        return JsonResponse({'success': False, 'message': 'Acesso negado'})
+    
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Método não permitido'})
+    
+    try:
+        solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+        
+        if solicitacao.status != 'pendente_aprovacao':
+            return JsonResponse({'success': False, 'message': 'Solicitação não pode ser aprovada parcialmente'})
+        
+        itens_aprovados_ids = request.POST.getlist('itens_aprovados[]')
+        observacoes = request.POST.get('observacoes', '')
+        
+        if not itens_aprovados_ids:
+            return JsonResponse({'success': False, 'message': 'Selecione pelo menos um item para aprovar'})
+        
+        from django.db import transaction
+        
+        with transaction.atomic():
+            # Cria a nova solicitação com os itens aprovados
+            nova_solicitacao = SolicitacaoCompra.objects.create(
+                solicitante=solicitacao.solicitante,
+                obra=solicitacao.obra,
+                data_necessidade=solicitacao.data_necessidade,
+                justificativa=f"Aprovação parcial da SC {solicitacao.numero}",
+                status='aprovada',
+                aprovador=request.user,
+                data_aprovacao=timezone.now(),
+                observacoes_aprovacao=observacoes
+            )
+            
+            # Move os itens da solicitação original para a nova
+            itens_aprovados = ItemSolicitacao.objects.filter(id__in=itens_aprovados_ids, solicitacao=solicitacao)
+            for item_original in itens_aprovados:
+                ItemSolicitacao.objects.create(
+                    solicitacao=nova_solicitacao,
+                    descricao=item_original.descricao,
+                    quantidade=item_original.quantidade,
+                    unidade=item_original.unidade,
+                    observacoes=item_original.observacoes
+                )
+            
+            # Remove os itens movidos da solicitação original
+            itens_aprovados.delete()
+            
+            # --- REGISTRO DE HISTÓRICO ---
+            detalhes_historico = f"Itens aprovados movidos para a nova SC {nova_solicitacao.numero}."
+            if observacoes:
+                detalhes_historico += f" Observações: {observacoes}"
+
+            # Adiciona histórico na solicitação original
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao,
+                usuario=request.user,
+                acao="Aprovação Parcial",
+                detalhes=detalhes_historico
+            )
+            # Adiciona histórico na nova solicitação
+            HistoricoSolicitacao.objects.create(
+                solicitacao=nova_solicitacao,
+                usuario=request.user,
+                acao="Criação por Aprovação Parcial",
+                detalhes=f"Originada da SC {solicitacao.numero}."
+            )
+            # --- FIM DO REGISTRO ---
+
+            # Se a solicitação original ficou sem itens, marca como rejeitada/finalizada
+            if not solicitacao.itens.exists():
+                solicitacao.status = 'rejeitada' # Ou outro status que faça sentido
+                solicitacao.aprovador = request.user
+                solicitacao.data_aprovacao = timezone.now()
+                solicitacao.observacoes_aprovacao = f"Todos os itens foram movidos para a SC {nova_solicitacao.numero}."
+            
+            solicitacao.save()
+            
+        return JsonResponse({
+            'success': True, 
+            'message': f'Aprovação parcial realizada! Nova SC {nova_solicitacao.numero} criada com {len(itens_aprovados_ids)} item(ns) aprovado(s).'
+        })
+    
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Erro: {str(e)}'})
+
+@login_required
+def dashboard_relatorios(request):
+    if request.user.perfil not in ['engenheiro', 'almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    # --- 1. Cálculos Gerais (Visão Geral) ---
+    all_scs = SolicitacaoCompra.objects.all()
+    aprovado_statuses = ['aprovada', 'aprovado_engenharia']
+    cotacao_statuses = ['em_cotacao', 'aguardando_resposta', 'cotacao_selecionada']
+
+    contexto_geral = {
+        'total_solicitacoes': all_scs.count(),
+        'solicitacoes_pendentes': all_scs.filter(status='pendente_aprovacao').count(),
+        'solicitacoes_aprovadas': all_scs.filter(status__in=aprovado_statuses).count(),
+        'solicitacoes_em_cotacao': all_scs.filter(status__in=cotacao_statuses).count(),
+        'solicitacoes_finalizadas': all_scs.filter(status='finalizada').count(),
+        'solicitacoes_recebidas': all_scs.filter(status='recebida').count(),
+        'solicitacoes_rejeitadas': all_scs.filter(status='rejeitada').count(),
+        'obras_ativas': Obra.objects.filter(ativa=True).count(),
+    }
+
+    # --- 2. Detalhes e Novas Métricas por Obra ---
+    obras_com_scs = Obra.objects.filter(ativa=True, solicitacaocompra__isnull=False).distinct()
+    obras_stats_detalhado = []
+
+    for obra in obras_com_scs:
+        obra_scs = SolicitacaoCompra.objects.filter(obra=obra)
+        
+        stats = {
+            'obra': obra,
+            'pendentes': obra_scs.filter(status='pendente_aprovacao').count(),
+            'aprovadas': obra_scs.filter(status__in=aprovado_statuses).count(),
+            'em_cotacao': obra_scs.filter(status__in=cotacao_statuses).count(),
+            'finalizadas': obra_scs.filter(status='finalizada').count(),
+            'a_caminho': obra_scs.filter(status='a_caminho').count(),
+            'recebidas': obra_scs.filter(status__in=['recebida', 'recebida_parcial']).count(),
+            'rejeitadas': obra_scs.filter(status='rejeitada').count(),
+        }
+
+        # MÉTRICA: Itens Mais Solicitados (Top 5 por Quantidade)
+        stats['itens_mais_solicitados'] = ItemSolicitacao.objects.filter(
+            solicitacao__obra=obra
+        ).values('descricao', 'unidade').annotate(
+            total_quantidade=Sum('quantidade')
+        ).order_by('-total_quantidade')[:5]
+
+        # MÉTRICA: Consumo por Categoria (Valor Total em R$)
+        # ---- INÍCIO DA CORREÇÃO ----
+        consumo_valor_categoria = ItemCotacao.objects.filter(
+            cotacao__solicitacao__obra=obra, cotacao__vencedora=True
+        ).annotate(
+            subtotal=F('preco') * F('item_solicitacao__quantidade')
+        ).values(
+            categoria_nome=F('item_solicitacao__item_catalogo__categoria__categoria_mae__nome')
+        ).annotate(
+            valor_total=Sum('subtotal')
+        ).order_by('-valor_total')
+        
+        # MÉTRICA: Consumo por Categoria (Quantidade Total de Itens)
+        consumo_qtd_categoria = ItemSolicitacao.objects.filter(
+            solicitacao__obra=obra, item_catalogo__isnull=False
+        ).values(
+            categoria_nome=F('item_catalogo__categoria__categoria_mae__nome')
+        ).annotate(
+            qtd_total=Sum('quantidade')
+        ).order_by('-qtd_total')
+
+        # Prepara os dados para os gráficos em formato JSON
+        stats['consumo_valor_json'] = json.dumps({
+            'labels': [c['categoria_nome'] or 'Sem Categoria Principal' for c in consumo_valor_categoria],
+            'data': [float(c['valor_total']) for c in consumo_valor_categoria]
+        })
+        
+        stats['consumo_qtd_json'] = json.dumps({
+            'labels': [c['categoria_nome'] or 'Sem Categoria Principal' for c in consumo_qtd_categoria],
+            'data': [float(c['qtd_total']) for c in consumo_qtd_categoria]
+        })
+        # ---- FIM DA CORREÇÃO ----
+
+        obras_stats_detalhado.append(stats)
+
+    context = {
+        'geral': contexto_geral,
+        'obras_stats_detalhado': obras_stats_detalhado,
+    }
+    
+    return render(request, 'materiais/dashboard_relatorios.html', context)
+
+@login_required
+def buscar_solicitacoes(request):
+    """Função de busca avançada para solicitações"""
+    termo_busca = request.GET.get('q', '').strip()
+    status_filtro = request.GET.get('status', '')
+    obra_filtro = request.GET.get('obra', '')
+    data_inicio = request.GET.get('data_inicio', '')
+    data_fim = request.GET.get('data_fim', '')
+    solicitante_filtro = request.GET.get('solicitante', '')
+    
+    if request.user.perfil == 'engenheiro':
+        solicitacoes = SolicitacaoCompra.objects.all()
+    else:
+        solicitacoes = SolicitacaoCompra.objects.filter(solicitante=request.user)
+    
+    if termo_busca:
+        solicitacoes = solicitacoes.filter(
+            Q(numero__icontains=termo_busca) |
+            Q(justificativa__icontains=termo_busca) |
+            Q(itens__descricao__icontains=termo_busca)
+        ).distinct()
+    
+    if status_filtro:
+        solicitacoes = solicitacoes.filter(status=status_filtro)
+    
+    if obra_filtro:
+        solicitacoes = solicitacoes.filter(obra_id=obra_filtro)
+    
+    if data_inicio:
+        solicitacoes = solicitacoes.filter(data_criacao__gte=data_inicio)
+    
+    if data_fim:
+        solicitacoes = solicitacoes.filter(data_criacao__lte=data_fim)
+    
+    if solicitante_filtro and request.user.perfil == 'engenheiro':
+        solicitacoes = solicitacoes.filter(solicitante_id=solicitante_filtro)
+    
+    solicitacoes = solicitacoes.order_by('-data_criacao')
+    
+    obras = Obra.objects.filter(ativa=True).order_by('nome')
+    usuarios = User.objects.filter(perfil__in=['almoxarife_obra', 'engenheiro']).order_by('first_name', 'username')
+    
+    context = {
+        'solicitacoes': solicitacoes,
+        'obras': obras,
+        'usuarios': usuarios,
+        'termo_busca': termo_busca,
+        'status_filtro': status_filtro,
+        'obra_filtro': obra_filtro,
+        'data_inicio': data_inicio,
+        'data_fim': data_fim,
+        'solicitante_filtro': solicitante_filtro,
+        'status_choices': SolicitacaoCompra.STATUS_CHOICES,
+    }
+    
+    return render(request, 'materiais/buscar_solicitacoes.html', context)
+
+
+@login_required
+def exportar_relatorio(request):
+    """Exporta relatório de solicitações em CSV"""
+    if request.user.perfil not in ['engenheiro', 'almoxarife_escritorio']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    import csv
+    from django.http import HttpResponse
+    
+    response = HttpResponse(content_type='text/csv; charset=utf-8')
+    response['Content-Disposition'] = f'attachment; filename="relatorio_solicitacoes_{timezone.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+    
+    response.write('\ufeff')
+    
+    writer = csv.writer(response)
+    
+    writer.writerow([
+        'Número SC', 'Status', 'Obra', 'Solicitante', 'Data Criação', 
+        'Data Aprovação', 'Aprovador', 'Justificativa', 'Itens', 'Observações'
+    ])
+    
+    solicitacoes = SolicitacaoCompra.objects.select_related(
+        'obra', 'solicitante', 'aprovador'
+    ).prefetch_related('itens').order_by('-data_criacao')
+    
+    for sc in solicitacoes:
+        itens_str = '; '.join([
+            f"{item.descricao} ({item.quantidade} {item.unidade})" 
+            for item in sc.itens.all()
+        ])
+        
+        writer.writerow([
+            sc.numero,
+            sc.get_status_display(),
+            sc.obra.nome,
+            sc.solicitante.get_full_name() or sc.solicitante.username,
+            sc.data_criacao.strftime('%d/%m/%Y %H:%M') if sc.data_criacao else '',
+            sc.data_aprovacao.strftime('%d/%m/%Y %H:%M') if sc.data_aprovacao else '',
+            sc.aprovador.get_full_name() or sc.aprovador.username if sc.aprovador else '',
+            sc.justificativa,
+            itens_str,
+            sc.observacoes_aprovacao or ''
+        ])
+    
+    return response
+
+
+@login_required
+def duplicar_solicitacao(request, solicitacao_id):
+    """Duplica uma solicitação existente"""
+    if request.user.perfil not in ['almoxarife_obra', 'engenheiro']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    solicitacao_original = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    
+    if request.user.perfil != 'engenheiro' and solicitacao_original.solicitante != request.user:
+        messages.error(request, 'Você só pode duplicar suas próprias solicitações.')
+        return redirect('materiais:lista_solicitacoes')
+    
+    try:
+        from django.db import transaction
+    
+        with transaction.atomic():
+            nova_solicitacao = SolicitacaoCompra.objects.create(
+                solicitante=request.user,
+                obra=solicitacao_original.obra,
+                data_necessidade=solicitacao_original.data_necessidade,
+                justificativa=f"Duplicação da SC {solicitacao_original.numero} - {solicitacao_original.justificativa}",
+                status='aprovada' if request.user.perfil == 'engenheiro' else 'pendente_aprovacao'
+            )
+            
+            for item_original in solicitacao_original.itens.all():
+                ItemSolicitacao.objects.create(
+                    solicitacao=nova_solicitacao,
+                    descricao=item_original.descricao,
+                    quantidade=item_original.quantidade,
+                    unidade=item_original.unidade,
+                    observacoes=item_original.observacoes
+                )
+            
+            if request.user.perfil == 'engenheiro':
+                nova_solicitacao.aprovador = request.user
+                nova_solicitacao.data_aprovacao = timezone.now()
+                nova_solicitacao.save()
+                messages.success(request, f'✅ SC {nova_solicitacao.numero} duplicada e aprovada automaticamente!')
+            else:
+                messages.success(request, f'✅ SC {nova_solicitacao.numero} duplicada com sucesso!')
+            
+        return redirect('materiais:lista_solicitacoes')
+    
+    except Exception as e:
+        messages.error(request, f'Erro ao duplicar solicitação: {str(e)}')
+        return redirect('materiais:lista_solicitacoes')
+
+
+
+
+@login_required
+def api_solicitacao_detalhes(request, solicitacao_id):
+    try:
+        solicitacao = SolicitacaoCompra.objects.select_related(
+            'categoria_sc', 'solicitante', 'obra', 'destino'
+        ).get(id=solicitacao_id)
+        
+        dados = {
+            'numero': solicitacao.numero,
+            'status': solicitacao.get_status_display(),
+            'nome_descritivo': solicitacao.nome_descritivo,
+            'solicitante': solicitacao.solicitante.get_full_name() or solicitacao.solicitante.username,
+            'obra': solicitacao.obra.nome,
+            'destino': solicitacao.destino.nome if solicitacao.destino else "Endereço da Obra",
+            'data_criacao': timezone.localtime(solicitacao.data_criacao).strftime('%d/%m/%Y'),
+            'data_necessaria': solicitacao.data_necessidade.strftime('%d/%m/%Y'),
+            'observacoes': solicitacao.justificativa,
+            'is_emergencial': solicitacao.is_emergencial
+        }
+
+        itens = []
+        for item in solicitacao.itens.all():
+            # --- LÓGICA DE SEPARAÇÃO DA CATEGORIA ---
+            categoria_principal = "-"
+            subcategoria = "-"
+            # O campo 'categoria' no seu modelo é um texto 'Pai -> Filho'
+            # Vamos separá-lo aqui
+            if ' -> ' in item.categoria:
+                parts = item.categoria.split(' -> ', 1)
+                categoria_principal = parts[0]
+                subcategoria = parts[1]
+            elif item.categoria:
+                categoria_principal = item.categoria
+
+            itens.append({
+                'descricao': item.descricao, 
+                'quantidade': f"{item.quantidade:g}",
+                'unidade': item.unidade,
+                'categoria_principal': categoria_principal, # Novo campo
+                'subcategoria': subcategoria              # Novo campo
+            })
+        dados['itens'] = itens
+
+        historico = []
+        for evento in solicitacao.historico.select_related('usuario').all():
+            timestamp_local = timezone.localtime(evento.timestamp)
+            historico.append({
+                'status': evento.acao, 'timestamp': timestamp_local.strftime('%d/%m/%Y às %H:%M'),
+                'usuario': evento.usuario.get_full_name() or evento.usuario.username if evento.usuario else "Sistema",
+                'detalhes': evento.detalhes or ''
+            })
+        dados['historico'] = historico
+
+        return JsonResponse(dados)
+    
+    except SolicitacaoCompra.DoesNotExist:
+        return JsonResponse({'error': 'Solicitação não encontrada'}, status=404)
+    
+# Adicione esta nova função ao seu arquivo materiais/views.py cadastrar_itens
+@login_required
+def gerenciar_categorias(request):
+    # PERMISSÃO AMPLIADA PARA ENGENHEIRO
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor', 'engenheiro','almoxarife_obra']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    if request.method == 'POST':
+        form_type = request.POST.get('form_type')
+        nome = request.POST.get('nome')
+
+        if not nome:
+            messages.error(request, 'O nome da categoria não pode ser vazio.')
+            return redirect('materiais:gerenciar_categorias')
+
+        # Lógica para criar Categoria de Item (Principal ou Subcategoria)
+        if form_type == 'categoria_item':
+            categoria_mae_id = request.POST.get('categoria_mae') # Pode ser None ou um ID
+            
+            query = CategoriaItem.objects.filter(nome__iexact=nome, categoria_mae_id=categoria_mae_id)
+            if query.exists():
+                messages.error(request, 'Uma categoria com este nome e nesta mesma hierarquia já existe.')
+            else:
+                CategoriaItem.objects.create(nome=nome, categoria_mae_id=categoria_mae_id)
+                messages.success(request, f'Categoria de Item "{nome}" cadastrada com sucesso!')
+
+        # Lógica para criar Categoria de SC
+        elif form_type == 'categoria_sc':
+            if not CategoriaSC.objects.filter(nome__iexact=nome).exists():
+                CategoriaSC.objects.create(nome=nome)
+                messages.success(request, f'Categoria de SC "{nome}" cadastrada!')
+            else:
+                messages.error(request, 'Essa Categoria de SC já existe.')
+        
+        return redirect('materiais:gerenciar_categorias')
+
+    context = {
+        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).prefetch_related('subcategorias').order_by('nome'),
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome')
+    }
+    return render(request, 'materiais/gerenciar_categorias.html', context)
+
+
+@login_required
+def historico_aprovacoes(request):
+    # Garante que apenas engenheiros acessem esta página
+    if request.user.perfil != 'engenheiro':
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    # Pega os valores dos filtros da URL (GET)
+    termo_busca = request.GET.get('q', '').strip()
+    ano = request.GET.get('ano', '')
+    mes = request.GET.get('mes', '')
+    categoria_id = request.GET.get('categoria', '')
+    page = request.GET.get('page')
+    
+    # [NOVO] Captura o número de itens por página ou define o padrão
+    num_paginas_str = request.GET.get('num_paginas', '20')
+    try:
+        num_paginas = int(num_paginas_str)
+        if num_paginas <= 0 or num_paginas > 100: # Limite sensato para evitar problemas
+            num_paginas = 20
+    except ValueError:
+        num_paginas = 20
+
+    # 1. Query base: filtra APENAS as solicitações APROVADAS pelo usuário logado
+    base_query = SolicitacaoCompra.objects.filter(
+        aprovador=request.user
+    ).select_related('obra', 'solicitante', 'categoria_sc').prefetch_related('itens').order_by('-data_aprovacao')
+
+    # 2. Aplica os filtros adicionais
+    solicitacoes_aprovadas = base_query
+    if termo_busca:
+        solicitacoes_aprovadas = solicitacoes_aprovadas.filter(
+            Q(numero__icontains=termo_busca) |
+            Q(justificativa__icontains=termo_busca) |
+            Q(itens__descricao__icontains=termo_busca) |
+            Q(obra__nome__icontains=termo_busca)
+        ).distinct()
+    
+    if ano:
+        # Filtra pelo ano de criação da SC
+        solicitacoes_aprovadas = solicitacoes_aprovadas.filter(data_criacao__year=ano)
+    
+    if mes:
+        # Filtra pelo mês de criação da SC
+        solicitacoes_aprovadas = solicitacoes_aprovadas.filter(data_criacao__month=mes)
+        
+    if categoria_id:
+        solicitacoes_aprovadas = solicitacoes_aprovadas.filter(categoria_sc_id=categoria_id)
+
+    # 3. OTIMIZAÇÃO: Adiciona a contagem de itens
+    solicitacoes_aprovadas = solicitacoes_aprovadas.annotate(num_itens=Count('itens'))
+    
+    # 4. PAGINAÇÃO - Usa a variável num_paginas
+    paginator = Paginator(solicitacoes_aprovadas, num_paginas)
+    try:
+        solicitacoes_paginadas = paginator.page(page)
+    except PageNotAnInteger:
+        solicitacoes_paginadas = paginator.page(1)
+    except EmptyPage:
+        solicitacoes_paginadas = paginator.page(paginator.num_pages)
+    
+    # 5. Monta o contexto
+    context = {
+        # Envia a página de objetos em vez do queryset completo
+        'solicitacoes': solicitacoes_paginadas,
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
+        'meses_opcoes': range(1, 13),
+        'filtros_aplicados': {
+            'q': termo_busca,
+            'ano': ano,
+            'mes': mes,
+            'categoria': categoria_id,
+        },
+        # [NOVO] Adiciona as opções de paginação ao contexto
+        'num_paginas_opcoes': [10, 25, 50, 100],
+        'num_paginas': num_paginas
+    }
+    
+    return render(request, 'materiais/historico_aprovacoes.html', context)    
+
+@login_required
+def rejeitar_pelo_escritorio(request, solicitacao_id):
+    if request.user.perfil != 'almoxarife_escritorio':
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    if request.method == 'POST':
+        solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id, status='aprovada')
+        
+        # Opcional: pegar motivo da rejeição, se houver um campo no POST
+        motivo = request.POST.get('motivo', 'Rejeitada pelo escritório antes da cotação.')
+
+        solicitacao.status = 'rejeitada'
+        solicitacao.aprovador = request.user # Registra quem tomou a decisão final
+        solicitacao.data_aprovacao = timezone.now() # Registra quando
+        solicitacao.observacoes_aprovacao = motivo
+        solicitacao.save()
+        
+        HistoricoSolicitacao.objects.create(
+            solicitacao=solicitacao,
+            usuario=request.user,
+            acao="Solicitação Rejeitada",
+            detalhes=motivo
+        )
+
+        messages.warning(request, f'A SC "{solicitacao.nome_descritivo}" foi rejeitada.')
+        return redirect('materiais:gerenciar_cotacoes')
+
+    # Redireciona de volta se o método não for POST
+    return redirect('materiais:gerenciar_cotacoes')
+
+# Adicione esta nova função ao seu arquivo views.py
+@login_required
+def escritorio_editar_sc(request, solicitacao_id):
+    # View placeholder para a futura tela de edição
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    messages.info(request, f'A funcionalidade "Editar" para a SC {solicitacao.numero} está em desenvolvimento.')
+    return redirect('materiais:gerenciar_cotacoes')
+
+
+# Substitua sua função gerenciar_cotacoes por esta
+@login_required
+def gerenciar_cotacoes(request):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    base_query = SolicitacaoCompra.objects.order_by('-is_emergencial', 'data_criacao')
+    scs_para_iniciar = base_query.filter(status__in=['aprovada', 'aprovado_engenharia'])
+    
+    # --- LÓGICA DE IDENTIFICAÇÃO APRIMORADA ---
+    for sc in scs_para_iniciar:
+        itens = sc.itens.all()
+        count_agregados = 0
+        for item in itens:
+            if item.item_catalogo and item.item_catalogo.categoria and item.item_catalogo.categoria.categoria_mae:
+                if item.item_catalogo.categoria.categoria_mae.nome.lower() == 'agregados':
+                    count_agregados += 1
+        
+        sc.is_agregado = (itens.count() > 0 and count_agregados == itens.count())
+        sc.is_mista = (count_agregados > 0 and count_agregados < itens.count())
+    # --- FIM DA LÓGICA ---
+    
+    scs_em_cotacao = base_query.filter(status='em_cotacao')
+    base_aguardando_resposta = base_query.filter(status='aguardando_resposta').prefetch_related('envios_cotacao__fornecedor', 'cotacoes')
+    scs_pendentes_resposta = base_aguardando_resposta.filter(cotacoes__isnull=True)
+    scs_parcialmente_recebidas = base_aguardando_resposta.filter(cotacoes__isnull=False).distinct()
+
+    for sc in scs_parcialmente_recebidas:
+        sc.cotacoes_recebidas_ids = set(sc.cotacoes.values_list('fornecedor_id', flat=True))
+
+    scs_recebidas = base_query.filter(
+        Q(status='cotacao_selecionada') |
+        Q(status='aguardando_resposta', cotacoes__isnull=False)
+    ).distinct().prefetch_related('cotacoes__fornecedor')
+
+    aguardando_resposta_count = scs_pendentes_resposta.count()
+    
+    context = {
+        'scs_para_iniciar': scs_para_iniciar,
+        'scs_em_cotacao': scs_em_cotacao,
+        'scs_recebidas': scs_recebidas,
+        'aguardando_resposta_count': aguardando_resposta_count,
+        'scs_pendentes_resposta': scs_pendentes_resposta,
+        'scs_parcialmente_recebidas': scs_parcialmente_recebidas,
+    }
+    return render(request, 'materiais/gerenciar_cotacoes.html', context)
+
+@login_required
+def editar_solicitacao_escritorio(request, solicitacao_id):
+    if request.user.perfil != 'almoxarife_escritorio':
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:gerenciar_cotacoes')
+
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id, status__in=['aprovada', 'aprovado_engenharia'])
+
+    if request.method == 'POST':
+        try:
+            solicitacao.obra_id = request.POST.get('obra')
+            # Captura e salva o 'destino'
+            solicitacao.destino_id = request.POST.get('destino') if request.POST.get('destino') else None # NOVO
+            solicitacao.data_necessidade = request.POST.get('data_necessidade')
+            solicitacao.justificativa = request.POST.get('justificativa')
+            solicitacao.is_emergencial = request.POST.get('is_emergencial') == 'on'
+            solicitacao.categoria_sc_id = request.POST.get('categoria_sc')
+            
+            itens_json = request.POST.get('itens_json', '[]')
+            itens_data = json.loads(itens_json)
+
+            if not itens_data:
+                messages.error(request, 'A solicitação deve ter pelo menos um item.')
+                return redirect('materiais:editar_solicitacao_escritorio', solicitacao_id=solicitacao.id)
+
+            with transaction.atomic():
+                solicitacao.itens.all().delete()
+                for item_data in itens_data:
+                    item_catalogo = get_object_or_404(ItemCatalogo, id=item_data.get('item_id'))
+                    ItemSolicitacao.objects.create(
+                        solicitacao=solicitacao, item_catalogo=item_catalogo,
+                        descricao=item_catalogo.descricao, unidade=item_catalogo.unidade.sigla,
+                        categoria=str(item_catalogo.categoria), quantidade=float(item_data.get('quantidade')),
+                        observacoes=item_data.get('observacao')
+                    )
+                solicitacao.save()
+                HistoricoSolicitacao.objects.create(solicitacao=solicitacao, usuario=request.user, acao="SC Editada", detalhes="A solicitação foi editada pelo escritório.")
+
+            messages.success(request, f'Solicitação "{solicitacao.numero}" atualizada com sucesso!')
+            return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=iniciar-cotacao")
+
+        except Exception as e:
+            messages.error(request, f'Ocorreu um erro ao salvar as alterações: {e}')
+            return redirect('materiais:editar_solicitacao_escritorio', solicitacao_id=solicitacao.id)
+
+    itens_existentes = []
+    for item in solicitacao.itens.all():
+        itens_existentes.append({
+            "item_id": item.item_catalogo_id, "descricao": item.descricao, "unidade": item.unidade,
+            "quantidade": f"{item.quantidade:g}", "observacao": item.observacoes
+        })
+    
+    context = {
+        'solicitacao': solicitacao,
+        'itens_existentes_json': json.dumps(itens_existentes),
+        'obras': Obra.objects.filter(ativa=True).order_by('nome'),
+        'itens_catalogo_json': json.dumps(list(ItemCatalogo.objects.filter(ativo=True).values('id', 'codigo', 'descricao', 'unidade__sigla'))),
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
+        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome'), # NOVO
+    }
+    
+    return render(request, 'materiais/editar_solicitacao.html', context)
+@login_required
+def api_buscar_fornecedores(request):
+    termo = request.GET.get('term', '').strip()
+    
+    # --- CONSULTA CORRIGIDA ---
+    # Agora, a busca é feita em ambos os campos: nome_fantasia E razao_social.
+    # Usamos um objeto Q para criar uma condição OR na busca.
+    fornecedores = Fornecedor.objects.filter(
+        Q(nome_fantasia__icontains=termo) | Q(razao_social__icontains=termo),
+        ativo=True
+    ).order_by('nome_fantasia')[:10]
+    
+    # --- RESULTADO CORRIGIDO ---
+    # O texto exibido no dropdown agora vem do campo 'nome_fantasia'.
+    resultados = [{'id': f.id, 'text': f.nome_fantasia} for f in fornecedores]
+    
+    return JsonResponse(resultados, safe=False)
+
+# materials/views.py
+
+@login_required
+def enviar_cotacao_fornecedor(request, solicitacao_id):
+    if request.method == 'POST' and request.user.perfil in ['almoxarife_escritorio', 'diretor']:
+        solicitacao_original = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+        
+        fornecedores_ids = request.POST.getlist('fornecedor')
+        itens_selecionados_ids = request.POST.getlist('itens_cotacao')
+        prazo_resposta = request.POST.get('prazo_resposta')
+        observacoes = request.POST.get('observacoes')
+        # --- CAPTURANDO NOVOS CAMPOS ---
+        forma_pagamento = request.POST.get('forma_pagamento')
+        prazo_pagamento = request.POST.get('prazo_pagamento', 0)
+
+        if not all([fornecedores_ids, itens_selecionados_ids]):
+            messages.error(request, 'Selecione ao menos um fornecedor e um item.')
+            return redirect('materiais:gerenciar_cotacoes')
+
+        fornecedores_selecionados = Fornecedor.objects.filter(id__in=fornecedores_ids)
+        itens_selecionados = ItemSolicitacao.objects.filter(id__in=itens_selecionados_ids, solicitacao=solicitacao_original)
+
+        try:
+            with transaction.atomic():
+                # Esta lógica de dividir SCs filhas foi removida para simplificar.
+                # A lógica agora sempre aplica os envios à SC original.
+                
+                solicitacao_original.status = 'aguardando_resposta'
+                solicitacao_original.save()
+                
+                envios_criados_ids = []
+                for fornecedor in fornecedores_selecionados:
+                    envio = EnvioCotacao.objects.create(
+                        solicitacao=solicitacao_original, fornecedor=fornecedor,
+                        prazo_resposta=prazo_resposta if prazo_resposta else None,
+                        observacoes=observacoes,
+                        # --- SALVANDO NOVOS CAMPOS ---
+                        forma_pagamento=forma_pagamento,
+                        prazo_pagamento=prazo_pagamento
+                    )
+                    envio.itens.set(itens_selecionados)
+                    envios_criados_ids.append(envio.id)
+                
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao_original, usuario=request.user, acao="Cotação Enviada", 
+                    detalhes=f"Cotação enviada para {len(fornecedores_selecionados)} fornecedor(es)."
+                )
+            
+            # --- NOVO REDIRECIONAMENTO ---
+            # Constrói a URL para a página de confirmação, passando os IDs dos envios criados
+            envios_ids_query_param = ",".join(map(str, envios_criados_ids))
+            redirect_url = f"{reverse('materiais:confirmar_envios_cotacao', args=[solicitacao_original.id])}?envios_ids={envios_ids_query_param}"
+            return redirect(redirect_url)
+
+        except Exception as e:
+            messages.error(request, f"Erro ao enviar cotação: {e}")
+            return redirect('materiais:gerenciar_cotacoes')
+    
+    messages.error(request, 'Acesso negado ou método inválido.')
+    return redirect('materiais:gerenciar_cotacoes')
+
+@login_required
+def gerar_email_cotacao(request, envio_id):
+    envio = get_object_or_404(EnvioCotacao.objects.select_related('solicitacao', 'fornecedor'), id=envio_id)
+    
+    itens_list_str = "\n".join([f"- {item.quantidade:g} {item.unidade} de {item.descricao}" for item in envio.itens.all()])
+    
+    email_body = (
+        f"Prezados(as) da empresa {envio.fornecedor.nome_fantasia},\n\n"
+        f"Gostaríamos de solicitar um orçamento para os seguintes itens, referentes à nossa Solicitação de Compra nº {envio.solicitacao.numero}:\n\n"
+        f"{itens_list_str}\n\n"
+        f"Condições sugeridas:\n"
+        f"- Forma de Pagamento: {envio.get_forma_pagamento_display()}\n"
+        f"- Prazo para Pagamento: {envio.prazo_pagamento} dias\n\n"
+        f"Observações adicionais: {envio.observacoes}\n\n"
+        f"Agradeceríamos se pudessem nos enviar a proposta até a data de {envio.prazo_resposta.strftime('%d/%m/%Y') if envio.prazo_resposta else 'o mais breve possível'}.\n\n"
+        f"Atenciosamente,\n"
+        f"{request.user.get_full_name() or request.user.username}"
+    )
+    
+    url_retorno = reverse('materiais:confirmar_envios_cotacao', args=[envio.solicitacao.id]) + f"?envios_ids={envio.id}"
+
+    context = {
+        'envio': envio,
+        'email_subject': f"Solicitação de Orçamento - SC {envio.solicitacao.numero}",
+        'email_body': email_body,
+        'url_retorno': url_retorno,
+    }
+    # A LINHA ABAIXO FOI CORRIGIDA COM O PARÊNTESE FINAL
+    return render(request, 'materiais/gerar_email_cotacao.html', context)
+
+@login_required
+def enviar_automatico_placeholder(request):
+    messages.info(request, 'A funcionalidade de envio automático de e-mail está em desenvolvimento.')
+    return redirect('materiais:gerenciar_cotacoes')
+
+@login_required
+def confirmar_envio_manual(request, envio_id):
+    envio = get_object_or_404(EnvioCotacao.objects.select_related('fornecedor', 'solicitacao'), id=envio_id)
+    solicitacao = envio.solicitacao
+    
+    if solicitacao.status == 'em_cotacao':
+        solicitacao.status = 'aguardando_resposta'
+        solicitacao.save()
+    
+    HistoricoSolicitacao.objects.create(
+        solicitacao=solicitacao,
+        usuario=request.user,
+        acao="Confirmação de Envio Manual",
+        # CORREÇÃO APLICADA AQUI: .nome -> .nome_fantasia
+        detalhes=f"Usuário confirmou o envio do e-mail de cotação para o fornecedor {envio.fornecedor.nome_fantasia}."
+    )
+    
+    # CORREÇÃO APLICADA AQUI: .nome -> .nome_fantasia
+    messages.success(request, f"Envio de e-mail para {envio.fornecedor.nome_fantasia} confirmado com sucesso!")
+    
+    url_retorno = request.GET.get('next') or reverse('materiais:gerenciar_cotacoes') + '?tab=aguardando'
+    return redirect(url_retorno)
+    
+@login_required
+def api_dados_confirmacao_rm(request, cotacao_id):
+    cotacao_vencedora = get_object_or_404(Cotacao.objects.select_related('fornecedor'), id=cotacao_id)
+    solicitacao = cotacao_vencedora.solicitacao
+    
+    # Lógica para encontrar fornecedores pendentes
+    fornecedores_com_cotacao = solicitacao.cotacoes.values_list('fornecedor_id', flat=True)
+    envios_pendentes = solicitacao.envios_cotacao.select_related('fornecedor').exclude(fornecedor_id__in=fornecedores_com_cotacao)
+    
+    # Lógica para buscar os itens da cotação
+    itens_da_cotacao = []
+    for item_cotado in cotacao_vencedora.itens_cotados.select_related('item_solicitacao').all():
+        item_solicitado = item_cotado.item_solicitacao
+        itens_da_cotacao.append({
+            'descricao': item_solicitado.descricao,
+            'quantidade': f"{item_solicitado.quantidade:g}",
+            'unidade': item_solicitado.unidade,
+            'preco_total_item': f"R$ {(item_cotado.preco * item_solicitado.quantidade):.2f}".replace('.', ',')
+        })
+
+    dados = {
+        'vencedora': {
+            # CORRIGIDO AQUI
+            'fornecedor': cotacao_vencedora.fornecedor.nome_fantasia,
+            'valor': f"R$ {cotacao_vencedora.valor_total:.2f}".replace('.',','),
+            'prazo': cotacao_vencedora.prazo_entrega or "Não informado",
+            'pagamento': cotacao_vencedora.condicao_pagamento or "Não informado",
+        },
+        # E CORRIGIDO AQUI
+        'pendentes': [envio.fornecedor.nome_fantasia for envio in envios_pendentes],
+        'itens': itens_da_cotacao,
+    }
+    return JsonResponse(dados)
+
+@login_required
+def gerenciar_requisicoes(request):
+    base_query = RequisicaoMaterial.objects.select_related(
+        'cotacao_vencedora__fornecedor', 
+        'assinatura_almoxarife', 
+        'assinatura_diretor'
+    ).order_by('-data_criacao')
+
+    pendentes = base_query.filter(status_assinatura='pendente')
+    aguardando_assinatura = base_query.filter(status_assinatura='aguardando_diretor')
+    assinadas_enviadas = base_query.filter(status_assinatura='assinada')
+
+    
+    context = {
+        'pendentes': pendentes,
+        'aguardando_assinatura': aguardando_assinatura,
+        'assinadas_enviadas': assinadas_enviadas,
+    }
+    return render(request, 'materiais/gerenciar_requisicoes.html', context)
+
+@login_required
+def assinar_requisicao(request, rm_id):
+    if request.method == 'POST':
+        rm = get_object_or_404(RequisicaoMaterial, id=rm_id)
+        password = request.POST.get('password')
+
+        if not request.user.check_password(password):
+            messages.error(request, 'Senha incorreta. A assinatura não foi concluída.')
+            return redirect('materiais:gerenciar_requisicoes')
+
+        # --- INÍCIO DA LÓGICA ADICIONADA ---
+        solicitacao = rm.solicitacao_origem # Pegamos a SC original
+        # --- FIM DA LÓGICA ADICIONADA ---
+
+        if request.user.perfil == 'almoxarife_escritorio' and not rm.assinatura_almoxarife:
+            rm.assinatura_almoxarife = request.user
+            rm.data_assinatura_almoxarife = timezone.now()
+            rm.status_assinatura = 'aguardando_diretor'
+            messages.success(request, f'RM {rm.numero} assinada por você. Aguardando Diretor.')
+            
+            # --- INÍCIO DA LÓGICA ADICIONADA ---
+            # Adiciona um registro no histórico da SC
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao, usuario=request.user, acao="RM Assinada (1/2)",
+                detalhes=f"Primeira assinatura (Almoxarife Escritório) confirmada para a RM {rm.numero}."
+            )
+            # --- FIM DA LÓGICA ADICIONADA ---
+        
+        elif request.user.perfil == 'diretor' and rm.assinatura_almoxarife and not rm.assinatura_diretor:
+            rm.assinatura_diretor = request.user
+            rm.data_assinatura_diretor = timezone.now()
+            rm.status_assinatura = 'assinada'
+            messages.success(request, f'RM {rm.numero} assinada! Todas as assinaturas foram coletadas.')
+
+            # --- INÍCIO DA LÓGICA ADICIONADA ---
+            # Adiciona um registro no histórico da SC
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao, usuario=request.user, acao="RM Assinada (2/2)",
+                detalhes=f"Segunda assinatura (Diretor) confirmada. RM {rm.numero} pronta para envio."
+            )
+            # --- FIM DA LÓGICA ADICIONADA ---
+        
+        else:
+            messages.warning(request, f'Não foi possível registrar a assinatura na RM {rm.numero}. Verifique o estado da requisição.')
+
+        rm.save()
+    return redirect('materiais:gerenciar_requisicoes')
+
+
+
+@login_required
+def enviar_rm_fornecedor(request, rm_id):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    rm = get_object_or_404(RequisicaoMaterial, id=rm_id)
+
+    if rm.status_assinatura != 'assinada':
+        messages.warning(request, f'A RM {rm.numero} não está no status "Assinada" e não pode ser enviada.')
+        return redirect('materiais:gerenciar_requisicoes')
+
+    if request.method == 'POST':
+        # --- NOVO: CAPTURA E SALVA O HEADER ESCOLHIDO ---
+        header_choice = request.POST.get('header_choice', 'A') 
+        
+        # Inicia a transação
+        with transaction.atomic():
+            solicitacao = rm.solicitacao_origem
+
+            # 1. Atualiza e salva o campo do cabeçalho antes de alterar o status
+            rm.header_choice = header_choice
+            
+            # 2. Atualiza o status da RM para envio
+            rm.status_assinatura = 'enviada'
+            rm.enviada_fornecedor = True
+            rm.data_envio_fornecedor = timezone.now()
+            rm.save() # Salva o campo header_choice
+            
+            # 3. ATUALIZA O STATUS DA SC ORIGINAL PARA "A CAMINHO"
+            solicitacao.status = 'a_caminho'
+            solicitacao.save()
+
+            # 4. ADICIONA O EVENTO CORRETO AO HISTÓRICO DA SC
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao,
+                usuario=request.user,
+                acao="Material a Caminho",
+                detalhes=f"A RM {rm.numero} foi enviada para o fornecedor {rm.cotacao_vencedora.fornecedor.nome_fantasia}. Cabeçalho utilizado: {header_choice}."
+            )
+        
+        messages.success(request, f'Envio da RM {rm.numero} confirmado com sucesso! Cabeçalho {header_choice} utilizado.')
+        return redirect('materiais:gerenciar_requisicoes')
+
+    # --- Adiciona a lista de opções de headers ao contexto GET ---
+    from . import rm_config
+    context = {
+        'rm': rm,
+        'header_choices': rm_config.HEADER_CHOICES,
+    }
+    return render(request, 'materiais/enviar_rm.html', context)
+
+@login_required
+def editar_item(request, item_id):
+    # CORREÇÃO: Acesso liberado para engenheiro, almoxarife_escritorio e diretor
+    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro','almoxarife_obra']
+    if request.user.perfil not in PERFIS_PERMITIDOS:
+        messages.error(request, 'Você não tem permissão para editar itens do catálogo.')
+        return redirect('materiais:dashboard')
+
+    item_para_editar = get_object_or_404(ItemCatalogo, id=item_id)
+
+    if request.method == 'POST':
+        # Pega os dados enviados pelo formulário
+        subcategoria_id = request.POST.get('subcategoria')
+        descricao = request.POST.get('descricao')
+        unidade_id = request.POST.get('unidade')
+        tags_ids = request.POST.getlist('tags')
+        status_ativo = request.POST.get('status') == 'on'
+
+        if not all([descricao, subcategoria_id, unidade_id]):
+            messages.error(request, 'Todos os campos obrigatórios devem ser preenchidos.')
+        else:
+            try:
+                # Atualiza o objeto existente com os novos dados
+                item_para_editar.categoria_id = subcategoria_id
+                item_para_editar.descricao = descricao
+                item_para_editar.unidade_id = unidade_id
+                item_para_editar.ativo = status_ativo
+                item_para_editar.tags.set(tags_ids)
+                item_para_editar.save()
+
+                messages.success(request, f'Item "{item_para_editar.descricao}" atualizado com sucesso!')
+                return redirect('materiais:cadastrar_itens')
+            except Exception as e:
+                messages.error(request, f'Ocorreu um erro ao atualizar o item: {e}')
+
+    # Lógica para carregar a página (método GET)
+    context = {
+        'item': item_para_editar,
+        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
+        # Passamos a subcategoria atual para o template saber qual selecionar
+        'subcategorias_atuais': CategoriaItem.objects.filter(categoria_mae=item_para_editar.categoria.categoria_mae).order_by('nome'),
+        'unidades': UnidadeMedida.objects.all().order_by('nome'),
+        'tags': Tag.objects.all().order_by('nome'),
+    }
+    return render(request, 'materiais/editar_item.html', context)
+
+@login_required
+def visualizar_rm_pdf(request, rm_id):
+    rm = get_object_or_404(
+        RequisicaoMaterial.objects.select_related(
+            'solicitacao_origem__solicitante',
+            'solicitacao_origem__obra',
+            'solicitacao_origem__destino',
+            'cotacao_vencedora__fornecedor'
+        ), 
+        id=rm_id
+    )
+
+    # Lógica de seleção do cabeçalho
+    # O parâmetro 'header' da URL tem precedência sobre o valor salvo no RM.
+    header_key = request.GET.get('header', rm.header_choice or 'A') 
+    
+    # Busca os dados da empresa no dicionário DADOS_EMPRESAS.
+    empresa_data = rm_config.DADOS_EMPRESAS.get(header_key, rm_config.DADOS_EMPRESA) 
+
+    # ===================================================================
+    # INÍCIO DA LINHA ADICIONADA: Calcula o subtotal apenas dos itens
+    # ===================================================================
+    subtotal_itens = rm.valor_total - rm.cotacao_vencedora.valor_frete
+    # ===================================================================
+    # FIM DA LINHA ADICIONADA
+    # ===================================================================
+
+    context = {
+        'rm': rm,
+        'solicitacao': rm.solicitacao_origem,
+        'fornecedor': rm.cotacao_vencedora.fornecedor,
+        'itens_cotados': rm.cotacao_vencedora.itens_cotados.select_related('item_solicitacao').all(),
+        'empresa': empresa_data, # <-- Usa o cabeçalho dinâmico
+        'subtotal_itens': subtotal_itens, 
+    }
+    
+    html_string = render_to_string('materiais/rm_pdf_template.html', context)
+    pdf_file = HTML(string=html_string, base_url=request.build_absolute_uri()).write_pdf()
+    
+    response = HttpResponse(pdf_file, content_type='application/pdf')
+    response['Content-Disposition'] = f'inline; filename="RM_{rm.numero}.pdf"'
+    return response
+
+@login_required
+def api_itens_filtrados(request):
+    categoria_id = request.GET.get('categoria_id')
+    subcategoria_id = request.GET.get('subcategoria_id')
+    
+    itens_query = ItemCatalogo.objects.filter(ativo=True)
+    
+    # Prioriza o filtro de subcategoria, se ele for especificado
+    if subcategoria_id:
+        itens_query = itens_query.filter(categoria_id=subcategoria_id)
+    # Se não houver subcategoria, filtra pela categoria principal
+    elif categoria_id:
+        # Busca itens cuja categoria tenha a categoria principal informada como 'mãe'
+        itens_query = itens_query.filter(categoria__categoria_mae_id=categoria_id)
+    
+    # Se nenhum filtro for aplicado, retorna todos os itens (comportamento inicial)
+    
+    itens = list(itens_query.select_related('unidade').values('id', 'codigo', 'descricao', 'unidade__sigla'))
+    return JsonResponse(itens, safe=False)
+
+@login_required
+def confirmar_envios_cotacao(request, solicitacao_id):
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    # Pega os IDs dos envios da query string da URL
+    envios_ids_str = request.GET.get('envios_ids', '')
+    if envios_ids_str:
+        envios_ids = [int(eid) for eid in envios_ids_str.split(',')]
+        envios = EnvioCotacao.objects.filter(id__in=envios_ids).select_related('fornecedor').prefetch_related('itens')
+    else:
+        envios = EnvioCotacao.objects.none()
+
+    context = {
+        'solicitacao': solicitacao,
+        'envios': envios
+    }
+    return render(request, 'materiais/confirmar_envios.html', context)
+
+@login_required
+def api_get_itens_para_receber(request, solicitacao_id):
+    try:
+        sc = SolicitacaoCompra.objects.select_related('solicitante', 'obra').get(id=solicitacao_id)
+        
+        itens_data = []
+        for item in sc.itens.all():
+            total_recebido = ItemRecebido.objects.filter(item_solicitado=item).aggregate(total=Sum('quantidade_recebida'))['total'] or 0
+            quantidade_pendente = item.quantidade - total_recebido
+            
+            if quantidade_pendente > 0:
+                itens_data.append({
+                    'id': item.id,
+                    'descricao': item.descricao,
+                    'quantidade_solicitada': f"{item.quantidade:g}",
+                    'quantidade_pendente': f"{quantidade_pendente:g}",
+                    'unidade': item.unidade,
+                })
+        
+        return JsonResponse({
+            'success': True,
+            'sc': {
+                'numero': sc.numero,
+                'solicitante': sc.solicitante.get_full_name() or sc.solicitante.username,
+                'obra': sc.obra.nome,
+                'data_criacao': sc.data_criacao.strftime('%d/%m/%Y')
+            },
+            'itens': itens_data,
+        })
+    except SolicitacaoCompra.DoesNotExist:
+        return JsonResponse({'success': False, 'message': 'Solicitação não encontrada'}, status=404)
+
+
+from django.db.models import Q # Certifique-se de que esta importação está no topo do arquivo
+
+@login_required
+def registrar_recebimento(request):
+    user = request.user
+    perfil = user.perfil
+
+    if perfil not in ['almoxarife_obra', 'almoxarife_escritorio', 'diretor', 'engenheiro']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+        
+    search_query = request.GET.get('q', '').strip()
+
+    if perfil in ['almoxarife_escritorio', 'diretor']:
+        base_query = SolicitacaoCompra.objects.filter(status__in=['a_caminho', 'recebida_parcial'])
+    else: 
+        user_obras = user.obras.all()
+        base_query = SolicitacaoCompra.objects.filter(
+            obra__in=user_obras,
+            status__in=['a_caminho', 'recebida_parcial']
+        )
+    
+    # Otimiza a consulta para buscar todos os dados de uma vez
+    base_query = base_query.select_related(
+        'obra', 
+        'requisicao__cotacao_vencedora__fornecedor'
+    ).prefetch_related(
+        'itens__recebimentos'  # Pré-busca os itens e seus recebimentos
+    ).distinct()
+
+    if search_query:
+        base_query = base_query.filter(
+            Q(numero__icontains=search_query) |
+            Q(itens__descricao__icontains=search_query) |
+            Q(requisicao__cotacao_vencedora__fornecedor__nome_fantasia__icontains=search_query)
+        )
+
+    # Função interna para processar as SCs
+    def processar_solicitacoes(solicitacoes):
+        for sc in solicitacoes:
+            itens_pendentes = []
+            sc.itens_completos = 0
+            sc.total_itens = sc.itens.count()
+
+            for item in sc.itens.all():
+                # Acessa os recebimentos pré-buscados em memória, sem nova consulta
+                total_recebido = sum(rec.quantidade_recebida for rec in item.recebimentos.all())
+                
+                if total_recebido < item.quantidade:
+                    item.quantidade_pendente = item.quantidade - total_recebido
+                    itens_pendentes.append(item)
+                else:
+                    sc.itens_completos += 1
+            
+            sc.itens_pendentes = itens_pendentes
+            try:
+                sc.fornecedor = sc.requisicao.cotacao_vencedora.fornecedor.nome_fantasia
+            except:
+                sc.fornecedor = "Não encontrado"
+        return solicitacoes
+
+    scs_a_receber = processar_solicitacoes(base_query.filter(status='a_caminho').order_by('data_criacao'))
+    scs_parciais = processar_solicitacoes(base_query.filter(status='recebida_parcial').order_by('data_criacao'))
+
+    context = {
+        'scs_a_receber': scs_a_receber,
+        'scs_parciais': scs_parciais,
+        'search_query': search_query,
+    }
+    return render(request, 'materiais/registrar_recebimento.html', context)
+
+@login_required
+def iniciar_recebimento(request, solicitacao_id):
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    user = request.user
+    perfil = user.perfil
+
+    # PERMISSÃO AMPLIADA PARA ENGENHEIRO
+    if perfil not in ['almoxarife_obra', 'almoxarife_escritorio', 'diretor', 'engenheiro']:
+        messages.error(request, 'Você não tem permissão para acessar esta página.')
+        return redirect('materiais:dashboard')
+    
+    # Se for Almoxarife de Obra OU Engenheiro, verifica se a SC pertence a uma de suas obras
+    if perfil in ['almoxarife_obra', 'engenheiro'] and solicitacao.obra not in user.obras.all():
+        messages.error(request, 'Acesso negado a esta solicitação.')
+        return redirect('materiais:registrar_recebimento')
+    
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                novo_recebimento = Recebimento.objects.create(
+                    solicitacao=solicitacao,
+                    recebedor=request.user,
+                    observacoes=request.POST.get('observacoes', ''),
+                    nota_fiscal=request.FILES.get('nota_fiscal'),
+                    sc_assinada=request.FILES.get('sc_assinada'),
+                    boleto_comprovante=request.FILES.get('boleto_comprovante')
+                )
+                itens_selecionados_ids = request.POST.getlist('itens_selecionados')
+                for item_id in itens_selecionados_ids:
+                    quantidade_str = request.POST.get(f'quantidade_recebida_{item_id}')
+                    if quantidade_str and float(quantidade_str) > 0:
+                        ItemRecebido.objects.create(
+                            recebimento=novo_recebimento, item_solicitado_id=item_id,
+                            quantidade_recebida=float(quantidade_str),
+                            observacoes=request.POST.get(f'observacoes_{item_id}', '')
+                        )
+
+                total_itens_sc = solicitacao.itens.count()
+                itens_completos = 0
+                for item_solicitado in solicitacao.itens.all():
+                    total_recebido_do_item = item_solicitado.recebimentos.aggregate(total=Sum('quantidade_recebida'))['total'] or 0
+                    if total_recebido_do_item >= item_solicitado.quantidade:
+                        itens_completos += 1
+                
+                if itens_completos == total_itens_sc:
+                    solicitacao.status = 'recebida'
+                    acao_historico = "Material Recebido (Total)"
+                else:
+                    solicitacao.status = 'recebida_parcial'
+                    acao_historico = "Material Recebido (Parcial)"
+                solicitacao.save()
+
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao, usuario=request.user, acao=acao_historico,
+                    detalhes=f"Recebimento de {len(itens_selecionados_ids)} item(ns) registrado."
+                )
+                
+                messages.success(request, f'Recebimento da SC {solicitacao.numero} registrado com sucesso!')
+                return redirect('materiais:registrar_recebimento')
+        except Exception as e:
+            messages.error(request, f'Ocorreu um erro ao registrar o recebimento: {e}')
+
+    itens_pendentes = []
+    for item in solicitacao.itens.all():
+        total_recebido = item.recebimentos.aggregate(total=Sum('quantidade_recebida'))['total'] or 0
+        quantidade_pendente = item.quantidade - total_recebido
+        if quantidade_pendente > 0:
+            itens_pendentes.append({
+                'id': item.id,
+                'descricao': item.descricao,
+                'quantidade_solicitada': f"{item.quantidade:g}",
+                'quantidade_pendente': f"{quantidade_pendente:g}",
+                'unidade': item.unidade,
+            })
+    
+    context = {
+        'sc': solicitacao,
+        'itens_para_receber': itens_pendentes,
+    }
+    return render(request, 'materiais/iniciar_recebimento.html', context)
+
+@login_required
+def editar_solicitacao_analise(request, solicitacao_id):
+    # Garante que apenas engenheiros e diretores possam usar esta função.
+    if request.user.perfil not in ['engenheiro', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    # Busca a solicitação que está pendente de aprovação
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id, status='pendente_aprovacao')
+
+    if request.method == 'POST':
+        try:
+            # A lógica para salvar os dados é a mesma da tela do escritório
+            solicitacao.obra_id = request.POST.get('obra')
+            solicitacao.destino_id = request.POST.get('destino') if request.POST.get('destino') else None
+            solicitacao.data_necessidade = request.POST.get('data_necessidade')
+            solicitacao.justificativa = request.POST.get('justificativa')
+            solicitacao.is_emergencial = request.POST.get('is_emergencial') == 'on'
+            solicitacao.categoria_sc_id = request.POST.get('categoria_sc')
+            
+            itens_json = request.POST.get('itens_json', '[]')
+            itens_data = json.loads(itens_json)
+
+            if not itens_data:
+                messages.error(request, 'A solicitação deve ter pelo menos um item.')
+                return redirect('materiais:analisar_editar_solicitacao', solicitacao_id=solicitacao.id)
+
+            with transaction.atomic():
+                # Remove os itens antigos para substituí-los pelos novos
+                solicitacao.itens.all().delete()
+                for item_data in itens_data:
+                    item_catalogo = get_object_or_404(ItemCatalogo, id=item_data.get('item_id'))
+                    ItemSolicitacao.objects.create(
+                        solicitacao=solicitacao,
+                        item_catalogo=item_catalogo,
+                        descricao=item_catalogo.descricao,
+                        unidade=item_catalogo.unidade.sigla,
+                        categoria=str(item_catalogo.categoria),
+                        quantidade=float(item_data.get('quantidade')),
+                        observacoes=item_data.get('observacao')
+                    )
+                
+                # *** PONTO CHAVE DA MUDANÇA ***
+                # Ao salvar, o status muda para o próximo passo do fluxo do engenheiro.
+                solicitacao.status = 'aprovado_engenharia'
+                solicitacao.aprovador = request.user
+                solicitacao.data_aprovacao = timezone.now()
+                solicitacao.save()
+                
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao,
+                    usuario=request.user,
+                    acao="Aprovada com Edição",
+                    detalhes="A solicitação foi editada e aprovada pelo engenheiro."
+                )
+
+            messages.success(request, f'Solicitação "{solicitacao.numero}" foi editada e aprovada com sucesso!')
+            # Redireciona de volta para a lista de análise
+            return redirect('materiais:analisar_solicitacoes')
+
+        except Exception as e:
+            messages.error(request, f'Ocorreu um erro ao salvar as alterações: {e}')
+            return redirect('materiais:analisar_editar_solicitacao', solicitacao_id=solicitacao.id)
+
+    # A lógica para carregar a página (GET) é a mesma da tela do escritório
+    itens_existentes = []
+    for item in solicitacao.itens.all():
+        itens_existentes.append({
+            "item_id": item.item_catalogo_id, "descricao": item.descricao, "unidade": item.unidade,
+            "quantidade": f"{item.quantidade:g}", "observacao": item.observacoes
+        })
+    
+    context = {
+        'solicitacao': solicitacao,
+        'itens_existentes_json': json.dumps(itens_existentes),
+        'obras': Obra.objects.filter(ativa=True).order_by('nome'),
+        'itens_catalogo_json': json.dumps(list(ItemCatalogo.objects.filter(ativo=True).values('id', 'codigo', 'descricao', 'unidade__sigla'))),
+        'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
+        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome'),
+    }
+    
+    # *** PONTO CHAVE DA REUTILIZAÇÃO ***
+    # Nós renderizamos o mesmo template que o escritório usa!
+    return render(request, 'materiais/editar_solicitacao.html', context)
+
+@login_required
+def editar_fornecedor(request, fornecedor_id):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    fornecedor = get_object_or_404(Fornecedor, id=fornecedor_id)
+    # A lógica de POST/edição ficaria aqui, mas por enquanto retorna um placeholder simples.
+    
+    messages.info(request, f'Funcionalidade de edição para {fornecedor.nome_fantasia} em desenvolvimento.')
+    return redirect('materiais:gerenciar_fornecedores')
+
+
+# Nova View para Alteração de Status (ativar/inativar via AJAX)
+@login_required
+@csrf_exempt # Permite o POST simples via AJAX/fetch
+def alterar_status_fornecedor(request, fornecedor_id):
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        return JsonResponse({'success': False, 'message': 'Acesso negado.'}, status=403)
+        
+    if request.method == 'POST':
+        fornecedor = get_object_or_404(Fornecedor, id=fornecedor_id)
+        novo_status_str = request.POST.get('ativo', 'false')
+        
+        # Converte a string 'true'/'false' em booleano
+        novo_status = novo_status_str == 'true'
+
+        try:
+            fornecedor.ativo = novo_status
+            fornecedor.save()
+            
+            acao = "Ativado" if novo_status else "Inativado"
+            messages.success(request, f'Fornecedor {fornecedor.nome_fantasia} {acao} com sucesso!')
+            return JsonResponse({'success': True})
+        
+        except Exception as e:
+            return JsonResponse({'success': False, 'message': str(e)})
+
+    return JsonResponse({'success': False, 'message': 'Método não permitido.'})
+
+@login_required
+def excluir_categoria_item(request, categoria_id):
+    if request.method == 'POST':
+        if request.user.perfil not in ['almoxarife_escritorio', 'diretor','almoxarife_obra','engenhairo']:
+            messages.error(request, 'Acesso negado.')
+            return redirect('materiais:dashboard')
+
+        categoria = get_object_or_404(CategoriaItem, id=categoria_id)
+
+        try:
+            # Se for uma categoria principal (não tem pai)
+            if categoria.categoria_mae is None:
+                if categoria.subcategorias.exists():
+                    messages.error(request, f'Não é possível excluir a categoria principal "{categoria.nome}", pois ela contém subcategorias.')
+                else:
+                    nome_categoria = categoria.nome
+                    categoria.delete()
+                    messages.success(request, f'Categoria principal "{nome_categoria}" excluída com sucesso.')
+            # Se for uma subcategoria
+            else:
+                if ItemCatalogo.objects.filter(categoria=categoria).exists():
+                    messages.error(request, f'Não é possível excluir a subcategoria "{categoria.nome}", pois ela está associada a itens do catálogo.')
+                else:
+                    nome_categoria = categoria.nome
+                    categoria.delete()
+                    messages.success(request, f'Subcategoria "{nome_categoria}" excluída com sucesso.')
+        
+        except Exception as e:
+            messages.error(request, f"Ocorreu um erro ao tentar excluir: {e}")
+
+    return redirect('materiais:gerenciar_categorias')
+
+@login_required
+def cotacao_agregado(request, solicitacao_id):
+    sc_mae = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, "Acesso negado.")
+        return redirect('materiais:gerenciar_cotacoes')
+    
+    item_solicitado = sc_mae.itens.first()
+    is_agregado_valido = False
+    if item_solicitado and item_solicitado.item_catalogo and item_solicitado.item_catalogo.categoria and item_solicitado.item_catalogo.categoria.categoria_mae:
+        if item_solicitado.item_catalogo.categoria.categoria_mae.nome.lower() == 'agregados':
+            is_agregado_valido = True
+
+    if not is_agregado_valido:
+        messages.error(request, "Esta solicitação não é válida para o fluxo de agregados.")
+        return redirect('materiais:gerenciar_cotacoes')
+
+    if request.method == 'POST':
+        try:
+            fornecedor_id = request.POST.get('fornecedor')
+            
+            # --- LINHA CORRIGIDA ---
+            # O valor já vem no formato "8.33" do frontend, não precisa de limpeza.
+            preco_unitario_str = request.POST.get('preco_unitario', '0')
+            
+            quantidade_total = Decimal(request.POST.get('quantidade_total'))
+            quantidade_particao = Decimal(request.POST.get('quantidade_particao'))
+            
+            fornecedor = get_object_or_404(Fornecedor, id=fornecedor_id)
+            preco_unitario = Decimal(preco_unitario_str)
+            
+            if quantidade_particao <= 0 or quantidade_total <= 0:
+                raise ValueError("Quantidades devem ser maiores que zero.")
+
+            num_particoes = int(quantidade_total / quantidade_particao)
+            
+            with transaction.atomic():
+                sc_mae.status = 'em_cotacao'
+                sc_mae.save()
+
+                for i in range(num_particoes):
+                    sc_filha = SolicitacaoCompra.objects.create(
+                        solicitante=sc_mae.solicitante, obra=sc_mae.obra,
+                        data_necessidade=sc_mae.data_necessidade,
+                        justificativa=f"Entrega {i+1}/{num_particoes} do pedido original {sc_mae.numero}.",
+                        status='aprovada',
+                        aprovador=request.user, data_aprovacao=timezone.now(),
+                        sc_mae=sc_mae
+                    )
+                    item_filho = ItemSolicitacao.objects.create(
+                        solicitacao=sc_filha, item_catalogo=item_solicitado.item_catalogo,
+                        descricao=item_solicitado.descricao, unidade=item_solicitado.unidade,
+                        categoria=item_solicitado.categoria, quantidade=quantidade_particao
+                    )
+                    cotacao = Cotacao.objects.create(
+                        solicitacao=sc_filha, fornecedor=fornecedor,
+                        vencedora=True, data_cotacao=timezone.now()
+                    )
+                    ItemCotacao.objects.create(
+                        cotacao=cotacao, item_solicitacao=item_filho, preco=preco_unitario
+                    )
+                    
+                    RequisicaoMaterial.objects.create(
+                        solicitacao_origem=sc_filha, 
+                        cotacao_vencedora=cotacao,
+                        valor_total=preco_unitario * quantidade_particao
+                    )
+
+                    sc_filha.status = 'finalizada'
+                    sc_filha.save()
+            
+            sc_mae.status = 'finalizada'
+            sc_mae.save()
+
+            messages.success(request, f"{num_particoes} RMs de agregado foram geradas com sucesso para a SC {sc_mae.numero}.")
+            return redirect('materiais:gerenciar_requisicoes')
+
+        except Exception as e:
+            messages.error(request, f"Erro ao processar o pedido: {e}")
+
+    context = {
+        'solicitacao': sc_mae,
+        'item': item_solicitado,
+        'fornecedores': Fornecedor.objects.filter(ativo=True).order_by('nome_fantasia'),
+    }
+    return render(request, 'materiais/cotacao_agregado.html', context)
+
+@login_required
+def dividir_solicitacao_agregado(request, solicitacao_id):
+    """
+    Esta view identifica itens de agregado em uma SC mista,
+    cria uma nova SC filha apenas com eles, e redireciona para o fluxo simplificado.
+    """
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, "Acesso negado.")
+        return redirect('materiais:gerenciar_cotacoes')
+
+    sc_original = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+
+    itens_agregados = []
+    itens_comuns = []
+
+    for item in sc_original.itens.all():
+        is_agregado = False
+        if item.item_catalogo and item.item_catalogo.categoria and item.item_catalogo.categoria.categoria_mae:
+            if item.item_catalogo.categoria.categoria_mae.nome.lower() == 'agregados':
+                is_agregado = True
+        
+        if is_agregado:
+            itens_agregados.append(item)
+        else:
+            itens_comuns.append(item)
+
+    # Se não houver itens de agregado ou comuns, não há o que dividir.
+    if not itens_agregados or not itens_comuns:
+        messages.warning(request, "Esta solicitação não precisa ser dividida.")
+        return redirect('materiais:gerenciar_cotacoes')
+
+    try:
+        with transaction.atomic():
+            # 1. Cria a nova SC filha para os agregados
+            sc_filha_agregado = SolicitacaoCompra.objects.create(
+                solicitante=sc_original.solicitante,
+                obra=sc_original.obra,
+                data_necessidade=sc_original.data_necessidade,
+                justificativa=f"Itens de agregado separados da SC original {sc_original.numero}.",
+                status='aprovada', # Já nasce pronta para o fluxo de agregado
+                aprovador=request.user,
+                data_aprovacao=timezone.now(),
+                sc_mae=sc_original # Vincula à SC original
+            )
+
+            # 2. Move os itens de agregado da SC original para a nova SC filha
+            for item_agregado in itens_agregados:
+                item_agregado.solicitacao = sc_filha_agregado
+                item_agregado.save()
+            
+            # 3. Adiciona histórico em ambas as SCs
+            HistoricoSolicitacao.objects.create(
+                solicitacao=sc_original, usuario=request.user, acao="SC Dividida",
+                detalhes=f"Itens de agregado foram movidos para a nova SC {sc_filha_agregado.numero}."
+            )
+            HistoricoSolicitacao.objects.create(
+                solicitacao=sc_filha_agregado, usuario=request.user, acao="Criação por Divisão",
+                detalhes=f"Originada da SC mista {sc_original.numero}."
+            )
+
+            messages.success(request, f"A SC {sc_original.numero} foi dividida. Os itens de agregado estão na nova SC {sc_filha_agregado.numero}.")
+            
+            # 4. Redireciona para o fluxo simplificado da SC de agregado recém-criada
+            return redirect('materiais:cotacao_agregado', solicitacao_id=sc_filha_agregado.id)
+
+    except Exception as e:
+        messages.error(request, f"Ocorreu um erro ao tentar dividir a solicitação: {e}")
+        return redirect('materiais:gerenciar_cotacoes')
+
+@login_required
+def api_item_check(request):
+    """API para verificar duplicidade ou similaridade de item em tempo real."""
+    # PERFIS CORRIGIDOS para incluir 'engenheiro', conforme a regra de acesso à função de cadastro.
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor', 'engenheiro','almoxarife_obra']:
+        return JsonResponse({'status': 'denied', 'message': 'Acesso negado para esta função de API.'}, status=403)
+        
+    descricao = request.GET.get('descricao', '').strip()
+
+    if not descricao:
+        return JsonResponse({'status': 'ok', 'message': 'Descrição vazia.'})
+
+    # 1. Verifica Duplicidade Exata (Case-Insensitive)
+    if ItemCatalogo.objects.filter(descricao__iexact=descricao).exists():
+        return JsonResponse({'status': 'exact_duplicate', 'message': '❌ Item idêntico já cadastrado no catálogo.'})
+
+    # 2. Verifica Similaridade (Fuzzy Match, usando threshold de 0.6 para maior sensibilidade)
+    itens_similares = []
+    threshold = 0.6 # Valor ajustado anteriormente para maior sensibilidade
+    for item_existente in ItemCatalogo.objects.only('codigo', 'descricao'):
+        similaridade = similaridade_texto(descricao, item_existente.descricao)
+        if similaridade >= threshold:
+            itens_similares.append({
+                'id': item_existente.id, 
+                'codigo': item_existente.codigo,
+                'descricao': item_existente.descricao,
+                'similaridade': round(similaridade * 100, 1)
+            })
+
+    if itens_similares:
+        return JsonResponse({
+            'status': 'similar', 
+            'message': 'Encontrado(s) item(ns) similar(es). Por favor, confirme o cadastro para evitar duplicidade.',
+            'itens': itens_similares
+        })
+
+    return JsonResponse({'status': 'ok', 'message': 'Descrição única.'})
+
+@login_required
+def apagar_item(request, item_id):
+    """View para apagar um item do catálogo."""
+    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro','almoxarife_obra']
+    if request.user.perfil not in PERFIS_PERMITIDOS:
+        messages.error(request, 'Você não tem permissão para apagar itens do catálogo.')
+        return redirect('materiais:cadastrar_itens')
+
+    item = get_object_or_404(ItemCatalogo, pk=item_id)
+
+    # A exclusão só deve ser processada via POST (segurança)
+    if request.method == 'POST':
+        try:
+            item.delete()
+            messages.success(request, f'Item "{item.descricao}" (Código: {item.codigo}) apagado com sucesso do catálogo.')
+            return redirect('materiais:cadastrar_itens')
+        except Exception as e:
+            messages.error(request, f'Erro ao apagar o item: {e}')
+            return redirect('materiais:cadastrar_itens')
+
+    # Caso alguém tente acessar via GET, redireciona com aviso
+    messages.warning(request, 'A exclusão deve ser feita via POST (botão de apagar).')
+    return redirect('materiais:cadastrar_itens')
+
+# FUNÇÃO CORRIGIDA PARA SUBSTITUIR NO views.py
+# No topo de materiais/views.py, adicione estas importações
+from django.db.models import Q
+import google.generativeai as genai
+
+import json
+from django.db import transaction
+from django.urls import reverse
+
+# Novas importações necessárias
+import google.generativeai as genai
+from . import gemini_service
+
+# (Todas as suas outras views, como login_view, dashboard, etc., devem estar aqui)
+# ...
+
+# No topo de materiais/views.py, adicione ou confirme que estas importações existem
+from django.db.models import Q
+from . import gemini_service
+from .models import CategoriaItem, UnidadeMedida # E outros modelos que você já usa
+import math
+# E substitua a sua função api_sugerir_categoria por esta versão completa e final:
+@login_required
+@csrf_exempt
+def api_sugerir_categoria(request):
+    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
+    if request.user.perfil not in PERFIS_PERMITIDOS:
+        return JsonResponse({'success': False, 'error': 'Acesso negado.'}, status=403)
+    
+    item_description = request.GET.get('descricao', '').strip()
+    if not item_description:
+        return JsonResponse({'success': False, 'error': 'A descrição do item é obrigatória.'}, status=400)
+    
+    try:
+        # 1. GERA O EMBEDDING DO ITEM DE ENTRADA
+        input_embedding_vector = gemini_service.get_embedding_for_text(item_description)
+        if input_embedding_vector is None:
+            return JsonResponse({'success': False, 'error': 'Falha ao gerar embedding para o item. Verifique a chave da API e se o modelo de embedding está configurado.'}, status=500)
+
+        # Converte o vetor de entrada para ser comparável
+        input_vector = input_embedding_vector
+        
+        # 2. CALCULA A SIMILARIDADE DE COSSENO COM TODAS AS CATEGORIAS
+        
+        # Puxa apenas categorias que são subcategorias (têm embedding e categoria mãe)
+        all_categories = CategoriaItem.objects.select_related('categoria_mae').filter(
+            categoria_mae__isnull=False
+        ).exclude(embedding__isnull=True)
+        
+        scores = []
+        
+        # Magnitude do vetor de entrada (para a fórmula do cosseno)
+        magnitude_input = math.sqrt(sum(x*x for x in input_vector))
+
+        for category in all_categories:
+            db_vector = category.embedding
+            if not db_vector:
+                continue
+
+            # Produto escalar (Dot Product): A . B
+            dot_product = sum(a * b for a, b in zip(input_vector, db_vector))
+            
+            # Magnitude do vetor do DB: ||B||
+            magnitude_db = math.sqrt(sum(x*x for x in db_vector))
+            
+            # Similaridade de Cosseno: (A . B) / (||A|| * ||B||)
+            if magnitude_input * magnitude_db != 0:
+                similarity_score = dot_product / (magnitude_input * magnitude_db)
+            else:
+                similarity_score = 0.0
+
+            scores.append({
+                'score': similarity_score,
+                'id': category.id,
+                'mae_id': category.categoria_mae_id,
+                'nome': str(category),
+            })
+
+        # 3. FILTRA OS TOP 3 RESULTADOS POR SIMILARIDADE
+        scores.sort(key=lambda x: x['score'], reverse=True)
+        top_candidates = scores[:3]
+        
+        if not top_candidates or top_candidates[0]['score'] < 0.65:
+            # Se a melhor similaridade for baixa, enviamos apenas um prompt genérico
+            top_candidates_list = "Nenhum candidato com alta similaridade encontrado."
+        else:
+            # Envia a lista dos melhores candidatos para o Gemini validar/escolher
+            top_candidates_list = "Candidatos:\n" + "\n".join(
+                [f"Subcategoria: {c['nome']} (mae_id={c['mae_id']}, sub_id={c['id']}, Score={c['score']:.2f})" for c in top_candidates]
+            )
+
+        # 4. MONTA A LISTA DE UNIDADES (para o Gemini sugerir a melhor unidade)
+        units = UnidadeMedida.objects.all()
+        units_list = "\nUnidades:\n" + "\n".join(
+            [f"{u.sigla} (id={u.id})" for u in units]
+        )
+        
+        # 5. CHAMA O GEMINI PARA VALIDAÇÃO FINAL
+        gemini_response = gemini_service.classify_item_with_gemini(
+            item_description, top_candidates_list, units_list
+        )
+        
+        status = gemini_response.get("status")
+
+        if status == "EXISTENTE":
+            # Revalida o ID contra o banco de dados (segurança)
+            subcategoria_obj = CategoriaItem.objects.select_related('categoria_mae').get(pk=gemini_response["subcategoria_id"])
+            unidade_obj = UnidadeMedida.objects.get(pk=gemini_response["unidade_id"])
+            
+            if subcategoria_obj.categoria_mae is None:
+                return JsonResponse({'success': False, 'error': 'A IA sugeriu uma Categoria Principal em vez de uma Subcategoria existente.'}, status=400)
+                
+            response_data = {
+                'success': True, 'status': 'EXISTENTE',
+                'categoria_mae_id': subcategoria_obj.categoria_mae_id, 
+                'subcategoria_id': subcategoria_obj.id,
+                'unidade_id': unidade_obj.id
+            }
+            return JsonResponse(response_data)
+        
+        elif status == "SUGERIR_SUBCATEGORIA" or status == "SUGERIR_NOVA":
+            return JsonResponse({'success': True, **gemini_response})
+        
+        else:
+            return JsonResponse({'success': False, 'error': gemini_response.get("message", "Erro desconhecido da IA.")}, status=500)
+
+    except (CategoriaItem.DoesNotExist, UnidadeMedida.DoesNotExist):
+        return JsonResponse({'success': False, 'error': 'A IA sugeriu um ID de categoria ou unidade que não existe no banco de dados.'}, status=400)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'error': f'Erro interno no servidor: {str(e)}'}, status=500)
+    
+@login_required
+def cadastrar_item_inteligente_view(request):
+    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
+    if request.user.perfil not in PERFIS_PERMITIDOS:
+        messages.error(request, 'Acesso negado para o Cadastro Inteligente.')
+        return redirect('materiais:dashboard')
+
+    gemini_status = "OK"
+    gemini_message = "Pronto para usar a Classificação Inteligente."
+
+    try:
+        if not hasattr(gemini_service, 'gemini_model'):
+            gemini_status = "ERROR"
+            gemini_message = "Módulo de IA não está configurado corretamente. Contate o suporte."
+        elif not gemini_service.gemini_model:
+            gemini_status = "ERROR"
+            gemini_message = "A Chave GEMINI_API_KEY não está configurada corretamente no servidor. Contate o suporte."
+    except Exception as e:
+        gemini_status = "ERROR"
+        gemini_message = f"Erro de serviço Gemini: {str(e)}. Contate o suporte."
+
+    categorias_count = CategoriaItem.objects.filter(categoria_mae__isnull=True).count()
+    if categorias_count == 0:
+        messages.warning(request, 'Nenhuma categoria principal encontrada. Cadastre categorias antes de usar a classificação inteligente.')
+
+    context = {
+        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
+        'unidades': UnidadeMedida.objects.all().order_by('nome'),
+        'tags': Tag.objects.all().order_by('nome'),
+        'gemini_status': gemini_status,
+        'gemini_message': gemini_message,
+    }
+    return render(request, 'materiais/cadastrar_item_inteligente.html', context)
+
+
+def classify_item_with_gemini_safe(item_description: str, categories_list: str) -> dict:
+    try:
+        from . import gemini_service
+
+        if not hasattr(gemini_service, 'gemini_model') or not gemini_service.gemini_model:
+            return {
+                "status": "ERROR",
+                "message": "Serviço de IA não está disponível. Verifique a configuração da API."
+            }
+
+        if not item_description or not item_description.strip():
+            return {
+                "status": "ERROR",
+                "message": "Descrição do item não pode estar vazia."
+            }
+
+        if not categories_list or len(categories_list.strip()) < 10:
+            return {
+                "status": "ERROR",
+                "message": "Lista de categorias inválida ou vazia."
+            }
+
+        return gemini_service.classify_item_with_gemini(item_description, categories_list)
+
+    except ImportError:
+        return {
+            "status": "ERROR",
+            "message": "Módulo de IA não encontrado. Contate o suporte técnico."
+        }
+    except Exception as e:
+        return {
+            "status": "ERROR",
+            "message": f"Erro inesperado no serviço de IA: {str(e)}"
+        }
+
+
+@login_required
+@transaction.atomic
+def cadastrar_item_inteligente_submit(request):
+    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
+    if request.user.perfil not in PERFIS_PERMITIDOS:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+
+    if request.method != 'POST':
+        return redirect('materiais:cadastrar_item_inteligente')
+
+    try:
+        descricao = request.POST.get('descricao', '').strip()
+        unidade_id = request.POST.get('unidade', '').strip()
+        tags_ids = request.POST.getlist('tags')
+        status_ativo = request.POST.get('status') == 'on'
+
+        subcategoria_id = request.POST.get('subcategoria_id_final', '').strip()
+        nova_categoria_mae = request.POST.get('nova_categoria_mae', '').strip()
+        nova_subcategoria = request.POST.get('nova_subcategoria', '').strip()
+
+        erros = []
+        if not descricao:
+            erros.append("A descrição do item é obrigatória.")
+        if not unidade_id:
+            erros.append("A unidade de medida é obrigatória.")
+        if not subcategoria_id and not (nova_categoria_mae and nova_subcategoria):
+            erros.append("É necessário selecionar uma categoria existente ou criar uma nova.")
+
+        if erros:
+            for erro in erros:
+                messages.error(request, erro)
+            return redirect('materiais:cadastrar_item_inteligente')
+
+        categoria_final_obj = None
+
+        if subcategoria_id:
+            try:
+                categoria_final_obj = get_object_or_404(CategoriaItem, id=subcategoria_id)
+            except Exception:
+                messages.error(request, "Categoria selecionada não encontrada.")
+                return redirect('materiais:cadastrar_item_inteligente')
+
+        elif nova_categoria_mae and nova_subcategoria:
+            categoria_mae_obj, mae_created = CategoriaItem.objects.get_or_create(
+                nome=nova_categoria_mae,
+                categoria_mae__isnull=True,
+                defaults={'nome': nova_categoria_mae}
+            )
+
+            categoria_final_obj, sub_created = CategoriaItem.objects.get_or_create(
+                nome=nova_subcategoria,
+                categoria_mae=categoria_mae_obj,
+                defaults={'nome': nova_subcategoria, 'categoria_mae': categoria_mae_obj}
+            )
+            if mae_created or sub_created:
+                messages.info(request, f"Nova Categoria '{categoria_final_obj}' criada automaticamente.")
+
+        if categoria_final_obj:
+            unidade_obj = get_object_or_404(UnidadeMedida, id=unidade_id)
+
+            if ItemCatalogo.objects.filter(descricao__iexact=descricao).exists():
+                messages.error(request, f'❌ Item com a descrição "{descricao}" já existe no catálogo.')
+                return redirect('materiais:cadastrar_item_inteligente')
+
+            novo_item = ItemCatalogo(
+                descricao=descricao,
+                categoria=categoria_final_obj,
+                unidade=unidade_obj,
+                ativo=status_ativo
+            )
+            novo_item.save()
+
+            if tags_ids:
+                novo_item.tags.set(tags_ids)
+
+            messages.success(request, f'✅ Item "{novo_item.descricao}" (Código: {novo_item.codigo}) cadastrado via Classificação Inteligente!')
+            return redirect('materiais:cadastrar_itens')
+        else:
+            messages.error(request, "Erro crítico na categorização. Item não pôde ser cadastrado.")
+            return redirect('materiais:cadastrar_item_inteligente')
+
+    except ValueError as ve:
+        messages.error(request, f'Erro de validação: {ve}')
+    except Exception as e:
+        messages.error(request, f'Erro inesperado ao cadastrar item: {str(e)}')
+
+    return redirect('materiais:cadastrar_item_inteligente')
+
+@login_required
+def api_subcategorias(request, categoria_id):
+    # Certifique-se de que a importação de CategoriaItem está no cabeçalho
+    subcategorias = CategoriaItem.objects.filter(categoria_mae_id=categoria_id).order_by('nome')
+    data = [{'id': sub.id, 'nome': sub.nome} for sub in subcategorias]
+    return JsonResponse(data, safe=False)

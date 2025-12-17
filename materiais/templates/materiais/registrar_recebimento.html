@@ -1,0 +1,126 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Receber Material{% endblock %}
+
+{% block content %}
+<style>
+    {% include 'materiais/styles_dashboard.css' %}
+    .sc-card {
+        background-color: #ffffff;
+        border: 1px solid #e9ecef;
+        border-left-width: 4px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+        margin-bottom: 1.5rem;
+    }
+    .sc-card-pendente { border-left-color: #ffc107; }
+    .sc-card-parcial { border-left-color: #0dcaf0; }
+    .info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        font-size: 0.9rem;
+    }
+    .info-grid strong {
+        display: block;
+        color: #6c757d;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+    }
+</style>
+
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary me-3">
+        <i class="fas fa-arrow-left"></i> Voltar
+    </a>
+    <div>
+        <h4 class="mb-0">Receber Material</h4>
+        <p class="text-muted mb-0">Localize a SC para registrar a entrega.</p>
+    </div>
+</div>
+<hr class="mb-4">
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" action="{% url 'materiais:registrar_recebimento' %}">
+            <div class="input-group">
+                <input type="text" name="q" class="form-control" placeholder="Buscar por Nº da SC, RM, item ou fornecedor..." value="{{ search_query }}">
+                <button class="btn btn-primary" type="submit"><i class="fas fa-search"></i> Buscar</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="mb-4">
+    <h5 class="mb-3"><i class="fas fa-truck-loading text-warning"></i> Pendentes de Recebimento ({{ scs_a_receber.count }})</h5>
+    {% for sc in scs_a_receber %}
+        <div class="card sc-card sc-card-pendente">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <h5 class="mb-0">SC: {{ sc.numero }}</h5>
+                        <small class="text-muted">RM: {{ sc.requisicao.numero|default:"N/A" }}</small>
+                    </div>
+                    <a href="{% url 'materiais:iniciar_recebimento' sc.id %}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-box-open"></i> Receber
+                    </a>
+                </div>
+                <div class="info-grid">
+                    <div><strong>Fornecedor:</strong> {{ sc.fornecedor }}</div>
+                    <div><strong>Obra:</strong> {{ sc.obra.nome }}</div>
+                    <div><strong>Prev. Entrega:</strong> {{ sc.requisicao.cotacao_vencedora.prazo_entrega|default:"Não informado" }}</div>
+                </div>
+                <hr>
+                <div>
+                    <strong class="d-block mb-1" style="font-size: 0.9rem;">Itens Pendentes:</strong>
+                    <ul class="list-unstyled mb-0" style="font-size: 0.9em;">
+                        {% for item in sc.itens_pendentes %}
+                        <li>- {{ item.quantidade_pendente|floatformat:"-2" }} {{ item.unidade }} de <strong>{{ item.descricao }}</strong></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    {% empty %}
+        <p class="text-muted">Nenhuma solicitação aguardando o primeiro recebimento {% if search_query %} com o termo "{{ search_query }}"{% endif %}.</p>
+    {% endfor %}
+</div>
+
+<div class="mb-5">
+    <h5 class="mb-3"><i class="fas fa-box text-info"></i> Recebidas Parcialmente ({{ scs_parciais.count }})</h5>
+    {% for sc in scs_parciais %}
+        <div class="card sc-card sc-card-parcial">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <div>
+                        <h5 class="mb-0">SC: {{ sc.numero }}</h5>
+                        <small class="text-muted">RM: {{ sc.requisicao.numero|default:"N/A" }}</small>
+                    </div>
+                    <a href="{% url 'materiais:iniciar_recebimento' sc.id %}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-dolly"></i> Receber Restante
+                    </a>
+                </div>
+                <div class="info-grid">
+                    <div><strong>Fornecedor:</strong> {{ sc.fornecedor }}</div>
+                    <div><strong>Obra:</strong> {{ sc.obra.nome }}</div>
+                    <div><strong>Prev. Entrega:</strong> {{ sc.requisicao.cotacao_vencedora.prazo_entrega|default:"Não informado" }}</div>
+                </div>
+                <div class="mt-2">
+                    <small class="text-muted">Progresso ({{ sc.itens_completos }} de {{ sc.total_itens }} itens completos)</small>
+                    <div class="progress" style="height: 10px;"><div class="progress-bar bg-info" role="progressbar" style="width: {% widthratio sc.itens_completos sc.total_itens 100 %}%;"></div></div>
+                </div>
+                <hr>
+                <div>
+                    <strong class="d-block mb-1" style="font-size: 0.9rem;">Itens Pendentes:</strong>
+                    <ul class="list-unstyled mb-0" style="font-size: 0.9em;">
+                        {% for item in sc.itens_pendentes %}
+                        <li>- {{ item.quantidade_pendente|floatformat:"-2" }} {{ item.unidade }} de <strong>{{ item.descricao }}</strong></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    {% empty %}
+        <p class="text-muted">Nenhuma solicitação com recebimento parcial {% if search_query %} com o termo "{{ search_query }}"{% endif %}.</p>
+    {% endfor %}
+</div>
+
+{% endblock %}

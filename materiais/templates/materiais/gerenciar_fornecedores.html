@@ -1,0 +1,274 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Gerenciar Fornecedores{% endblock %}
+
+{% block content %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.mask/1.14.16/jquery.mask.min.js"></script>
+
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
+    <div>
+        <h4 class="mb-0">Gerenciar Fornecedores</h4>
+        <p class="text-muted mb-0">Cadastrar e gerenciar fornecedores</p>
+    </div>
+</div>
+<hr class="mb-4">
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5><i class="fas fa-plus-circle"></i> Novo Fornecedor</h5>
+    </div>
+    <div class="card-body">
+        <form method="post" id="formFornecedor">
+            {% csrf_token %}
+            <h6><i class="fas fa-building"></i> Dados da Empresa</h6><hr>
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label for="nome_fantasia" class="form-label">Nome Fantasia *</label>
+                    <input type="text" class="form-control" id="nome_fantasia" name="nome_fantasia" required>
+                </div>
+                <div class="col-md-5 mb-3">
+                    <label for="razao_social" class="form-label">Razão Social *</label>
+                    <input type="text" class="form-control" id="razao_social" name="razao_social" required>
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label for="cnpj" class="form-label">CNPJ *</label>
+                    <input type="text" class="form-control" id="cnpj" name="cnpj" placeholder="00.000.000/0000-00" required>
+                </div>
+            </div>
+
+            <div class="row align-items-end">
+                <div class="col-md-4 mb-3">
+                    <label for="tipo" class="form-label">Tipo *</label>
+                    <select class="form-select" id="tipo" name="tipo" required>
+                        <option value="material">Material</option>
+                        <option value="servico">Serviço</option>
+                        <option value="ambos">Ambos</option>
+                    </select>
+                </div>
+
+                <div class="col-md-8 mb-3">
+                    <label for="categoria_select" class="form-label">Adicionar Categoria/Serviço</label>
+                    <div class="input-group">
+                        <select class="form-select" id="categoria_select">
+                            <option value="" selected>Selecione a Categoria...</option>
+                            {% for cat in categorias_principais %}
+                                <option value="{{ cat.id }}">{{ cat.nome }}</option>
+                            {% endfor %}
+                        </select>
+                        <button class="btn btn-primary" type="button" id="adicionar_produto_btn" disabled title="Adicionar Categoria">
+                            <i class="fas fa-plus"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-md-4"></div>
+                <div class="col-md-8 mb-3">
+                    <label class="form-label">Produtos/Serviços Fornecidos (Selecionados)</label>
+                    <div id="produtos_selecionados_container" class="border p-2 rounded bg-light" style="min-height: 45px;">
+                        <span class="text-muted" id="placeholder_produtos">Nenhuma categoria/serviço adicionado.</span>
+                    </div>
+                    <input type="hidden" name="produtos_fornecidos" id="produtos_fornecidos_hidden">
+                </div>
+            </div>
+
+            <h6 class="mt-3"><i class="fas fa-user-tie"></i> Contato Principal</h6><hr>
+            <div class="row">
+                <div class="col-md-4 mb-3"><label for="contato_nome" class="form-label">Nome</label><input type="text" class="form-control" id="contato_nome" name="contato_nome"></div>
+                <div class="col-md-4 mb-3"><label for="email" class="form-label">E-mail</label><input type="email" class="form-control" id="email" name="email"></div>
+                <div class="col-md-2 mb-3"><label for="contato_telefone" class="form-label">Telefone</label><input type="text" class="form-control" id="contato_telefone" name="contato_telefone"></div>
+                <div class="col-md-2 mb-3"><label for="contato_whatsapp" class="form-label">WhatsApp</label><input type="text" class="form-control" id="contato_whatsapp" name="contato_whatsapp"></div>
+            </div>
+
+            <h6 class="mt-3"><i class="fas fa-map-marker-alt"></i> Endereço</h6><hr>
+            <div class="row">
+                <div class="col-md-2 mb-3"><label for="cep" class="form-label">CEP</label><input type="text" class="form-control" id="cep" name="cep"></div>
+                <div class="col-md-8 mb-3"><label for="logradouro" class="form-label">Logradouro</label><input type="text" class="form-control" id="logradouro" name="logradouro"></div>
+                <div class="col-md-2 mb-3"><label for="numero" class="form-label">Número</label><input type="text" class="form-control" id="numero" name="numero"></div>
+            </div>
+            <div class="row">
+                <div class="col-md-4 mb-3"><label for="bairro" class="form-label">Bairro</label><input type="text" class="form-control" id="bairro" name="bairro"></div>
+                <div class="col-md-4 mb-3"><label for="cidade" class="form-label">Cidade</label><input type="text" class="form-control" id="cidade" name="cidade"></div>
+                <div class="col-md-4 mb-3"><label for="estado" class="form-label">UF</label><input type="text" class="form-control" id="estado" name="estado" maxlength="2"></div>
+            </div>
+
+            <button type="submit" class="btn btn-success mt-3"><i class="fas fa-save"></i> Cadastrar Fornecedor</button>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h5><i class="fas fa-list"></i> Fornecedores Cadastrados ({{ fornecedores.count }})</h5></div>
+    <div class="card-body">
+        {% if fornecedores %}
+            <div class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Nome Fantasia</th>
+                            <th>CNPJ</th>
+                            <th>Contato</th>
+                            <th>Tipo</th>
+                            <th>Status</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for fornecedor in fornecedores %}
+                        <tr>
+                            <td><strong>{{ fornecedor.nome_fantasia }}</strong><small class="d-block text-muted">{{ fornecedor.razao_social }}</small></td>
+                            <td>{{ fornecedor.cnpj }}</td>
+                            <td>{{ fornecedor.contato_nome|default_if_none:'' }}<small class="d-block text-muted">{{ fornecedor.contato_telefone|default_if_none:'' }}</small></td>
+                            <td>{{ fornecedor.get_tipo_display }}</td>
+                            <td>{% if fornecedor.ativo %}<span class="badge bg-success">Ativo</span>{% else %}<span class="badge bg-danger">Inativo</span>{% endif %}</td>
+                            <td>
+                                <a href="{% url 'materiais:editar_fornecedor' fornecedor.id %}" class="btn btn-sm btn-outline-primary" title="Editar"><i class="fas fa-edit"></i></a>
+                                <button type="button" class="btn btn-sm {% if fornecedor.ativo %}btn-outline-warning{% else %}btn-outline-success{% endif %} toggle-status-btn"
+                                        data-fornecedor-id="{{ fornecedor.id }}"
+                                        data-status="{% if fornecedor.ativo %}false{% else %}true{% endif %}"
+                                        title="{% if fornecedor.ativo %}Pausar (Inativar){% else %}Ativar{% endif %}">
+                                    <i class="fas {% if fornecedor.ativo %}fa-pause{% else %}fa-play{% endif %}"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="text-center text-muted p-4"><p>Nenhum fornecedor cadastrado ainda.</p></div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block javascript %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+$(function() {
+    // Máscaras
+    $('#cnpj').mask('00.000.000/0000-00', {reverse: true});
+    $('#cep').mask('00000-000');
+    var SPMaskBehavior = function (val) {
+        return val.replace(/\D/g, '').length === 11 ? '(00) 00000-0000' : '(00) 0000-00009';
+    }, spOptions = { onKeyPress: function(val, e, field, options) { field.mask(SPMaskBehavior.apply({}, arguments), options); } };
+    $('#contato_telefone').mask(SPMaskBehavior, spOptions);
+    $('#contato_whatsapp').mask(SPMaskBehavior, spOptions);
+
+    // Estado local
+    let produtosSelecionados = [];
+
+    // Select2
+    $('#categoria_select').select2({
+        placeholder: "Selecione na lista...",
+        dropdownParent: $('#formFornecedor'),
+        width: '100%',
+        allowClear: true
+    });
+
+    function atualizarEstadoBotao() {
+        const val = $('#categoria_select').val();
+        $('#adicionar_produto_btn').prop('disabled', !(val && val !== ''));
+    }
+    atualizarEstadoBotao();
+    $('#categoria_select').on('change', atualizarEstadoBotao);
+
+    // Evita submit ao pressionar Enter dentro do Select2
+    $('#formFornecedor').on('keydown', function(e) {
+        if (e.key === 'Enter' && $(e.target).closest('.select2').length) {
+            e.preventDefault();
+            $('#adicionar_produto_btn').click();
+        }
+    });
+
+    // Clique no "+"
+    $('#adicionar_produto_btn').on('click', function(e) {
+        e.preventDefault();
+
+        const $sel = $('#categoria_select');
+        const id = ($sel.val() || '').toString();
+        const texto = ($sel.find('option:selected').text() || '').trim();
+
+        if (!id) return; // nada selecionado
+        if (produtosSelecionados.some(x => x.id === id)) {
+            // já existe; reseta seleção e sai
+            $sel.val(null).trigger('change');
+            atualizarEstadoBotao();
+            return;
+        }
+
+        produtosSelecionados.push({ id, nome: texto });
+        renderizarSelecionados();
+
+        // reset
+        $sel.val(null).trigger('change');
+        atualizarEstadoBotao();
+    });
+
+    function renderizarSelecionados() {
+        const $container = $('#produtos_selecionados_container');
+        const $hidden = $('#produtos_fornecidos_hidden');
+
+        if (produtosSelecionados.length === 0) {
+            $container.html('<span class="text-muted" id="placeholder_produtos">Nenhuma categoria/serviço adicionado.</span>');
+            $hidden.val('');
+            return;
+        }
+
+        const html = produtosSelecionados.map(item => (
+            `<span class="badge bg-primary text-white me-2 mb-1 d-inline-flex align-items-center" data-id="${item.id}">
+                <span>${item.nome}</span>
+                <i class="fas fa-times-circle ms-2 remove-produto-btn" style="cursor:pointer;"></i>
+            </span>`
+        )).join('');
+
+        $container.html(html);
+        $hidden.val(produtosSelecionados.map(x => x.id).join(','));
+
+        // remover
+        $container.find('.remove-produto-btn').on('click', function() {
+            const id = $(this).closest('span').data('id').toString();
+            produtosSelecionados = produtosSelecionados.filter(x => x.id !== id);
+            renderizarSelecionados();
+        });
+    }
+
+    // Botão de ativar/inativar (sem alterações)
+    $('.toggle-status-btn').on('click', function() {
+        const btn = $(this);
+        const fornecedorId = btn.data('fornecedor-id');
+        const novoStatus = btn.data('status');
+        const url = `{% url 'materiais:alterar_status_fornecedor' 0 %}`.replace('0', fornecedorId);
+
+        function getCookie(name) {
+            let cookieValue = null;
+            if (document.cookie && document.cookie !== '') {
+                const cookies = document.cookie.split(';');
+                for (let i = 0; i < cookies.length; i++) {
+                    const cookie = cookies[i].trim();
+                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        if (confirm(`Tem certeza que deseja ${novoStatus.toString() === 'true' ? 'ATIVAR' : 'INATIVAR'} este fornecedor?`)) {
+            $.ajax({
+                url: url, type: 'POST',
+                data: { 'ativo': novoStatus, 'csrfmiddlewaretoken': getCookie('csrftoken') },
+                success: function(resp) {
+                    if (resp.success) location.reload();
+                    else alert('Erro ao alterar status: ' + (resp.message || ''));
+                },
+                error: function() { alert('Erro na comunicação com o servidor.'); }
+            });
+        }
+    });
+});
+</script>
+{% endblock %}
