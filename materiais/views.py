@@ -16,7 +16,6 @@ from django.db.models import Case, When, Value, IntegerField
 from decimal import Decimal
 from . import rm_config
 import numpy as np
-from . import gemini_service
 from .models import (
     User, SolicitacaoCompra, ItemSolicitacao, Fornecedor, ItemCatalogo, 
     Obra, Cotacao, RequisicaoMaterial, HistoricoSolicitacao, 
@@ -743,10 +742,10 @@ def cadastrar_itens(request):
 
     # --- INÍCIO DA LÓGICA DE FILTROS, ORDENAÇÃO E PAGINAÇÃO ---
     termo_busca = request.GET.get('q', '').strip()
-    sort_by = request.GET.get('sort', 'descricao') # Padrão: descrição
-    direction = request.GET.get('dir', 'asc')       # Padrão: A-Z
+    sort_by = request.GET.get('sort', 'descricao')
+    direction = request.GET.get('dir', 'asc')
     page = request.GET.get('page')
-    per_page_str = request.GET.get('per_page', '25') # Padrão: 25 itens
+    per_page_str = request.GET.get('per_page', '25')
 
     try:
         per_page = int(per_page_str)
@@ -755,28 +754,19 @@ def cadastrar_itens(request):
     except ValueError:
         per_page = 25
     
-    # 1. Query Base
-    # Uso de select_related para otimizar as buscas de Categoria, Subcategoria e Unidade
     base_query = ItemCatalogo.objects.filter(
-        # Filtra apenas itens que têm subcategoria (para não aparecer categorias "mães" acidentais)
         categoria__categoria_mae__isnull=False 
-    ).select_related(
-        'categoria__categoria_mae', 
-        'unidade'
-    )
+    ).select_related('categoria__categoria_mae', 'unidade')
     
-    # 2. Aplica Busca (q)
     if termo_busca:
         base_query = base_query.filter(
             Q(codigo__icontains=termo_busca) |
             Q(descricao__icontains=termo_busca) |
-            Q(categoria__nome__icontains=termo_busca) | # Subcategoria
-            Q(categoria__categoria_mae__nome__icontains=termo_busca) | # Categoria Principal
+            Q(categoria__nome__icontains=termo_busca) |
+            Q(categoria__categoria_mae__nome__icontains=termo_busca) |
             Q(unidade__sigla__icontains=termo_busca)
-        ).distinct() # Distinct para evitar duplicidade causada pelo Q
+        ).distinct()
     
-    # 3. Aplica Ordenação
-    # Mapeamento de campos de front-end para campos do modelo
     valid_sort_fields = {
         'codigo': 'codigo',
         'descricao': 'descricao',
@@ -788,10 +778,8 @@ def cadastrar_itens(request):
     
     order_field = valid_sort_fields.get(sort_by, 'descricao')
     order = f'-{order_field}' if direction == 'desc' else order_field
-
     itens_list = base_query.order_by(order)
     
-    # 4. Paginação
     paginator = Paginator(itens_list, per_page)
     try:
         itens_paginados = paginator.page(page)
@@ -799,34 +787,26 @@ def cadastrar_itens(request):
         itens_paginados = paginator.page(1)
     except EmptyPage:
         itens_paginados = paginator.page(paginator.num_pages)
-    
     # --- FIM DA LÓGICA DE FILTROS, ORDENAÇÃO E PAGINAÇÃO ---
 
-    # AJUSTE: Filtra apenas categorias principais que TÊM subcategorias
-    categorias_principais_list = CategoriaItem.objects.filter(categoria_mae__isnull=True, subcategorias__isnull=False).distinct().order_by('nome')
+    categorias_principais_list = CategoriaItem.objects.filter(
+        categoria_mae__isnull=True, 
+        subcategorias__isnull=False
+    ).distinct().order_by('nome')
     
     unidades_list = UnidadeMedida.objects.all().order_by('nome')
     tags_list = Tag.objects.all().order_by('nome')
 
     if request.method == 'POST':
         subcategoria_id = request.POST.get('subcategoria')
-        descricao = request.POST.get('descricao')
+        descricao = request.POST.get('descricao', '').strip()
         unidade_id = request.POST.get('unidade')
         tags_ids = request.POST.getlist('tags')
         status_ativo = request.POST.get('status') == 'on'
+        # Captura se o cadastro foi forçado pelo Modal de Similaridade
         forcar_cadastro = request.POST.get('forcar_cadastro') == 'true'
         
-        erros = []
-        if not descricao:
-            erros.append("O campo 'Descrição do Item' é obrigatório.")
-        if not request.POST.get('categoria'):
-            erros.append("O campo 'Categoria' é obrigatório.")
-        if not subcategoria_id:
-            erros.append("O campo 'Subcategoria' é obrigatório.")
-        if not unidade_id:
-            erros.append("O campo 'Unidade de Medida' é obrigatório.")
-
-        # Contexto de erro (Note que 'itens' usa a lista paginada)
+        # Contexto de erro reutilizável
         contexto_erro = {
             'itens': itens_paginados, 
             'categorias_principais': categorias_principais_list,
@@ -839,15 +819,24 @@ def cadastrar_itens(request):
             'per_page': per_page,
             'per_page_options': [10, 25, 50, 100],
         }
-        
-        # O backend verifica o submit forçado para permitir duplicação
-        if ItemCatalogo.objects.filter(descricao__iexact=descricao).exists() and not forcar_cadastro:
-            messages.error(request, f'❌ Já existe um item com a descrição "{descricao}"!')
-            return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
-        
+
+        # Validação de campos obrigatórios
+        erros = []
+        if not descricao: erros.append("O campo 'Descrição' é obrigatório.")
+        if not request.POST.get('categoria'): erros.append("A 'Categoria' é obrigatória.")
+        if not subcategoria_id: erros.append("A 'Subcategoria' é obrigatória.")
+        if not unidade_id: erros.append("A 'Unidade' é obrigatória.")
+
         if erros:
-            for erro in erros:
-                messages.error(request, erro)
+            for erro in erros: messages.error(request, erro)
+            return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
+
+        # LÓGICA DE DUPLICIDADE (RESTAURADA DA VERSÃO ANTIGA)
+        # Verifica se já existe descrição idêntica (independente de maiúsculas/minúsculas)
+        # Se existir e o usuário não clicou em "Forçar" no modal, bloqueia.
+        if ItemCatalogo.objects.filter(descricao__iexact=descricao).exists() and not forcar_cadastro:
+            messages.error(request, f'❌ Já existe um item cadastrado com a descrição "{descricao}"!')
+            # Retorna o status 'duplicado' para o frontend processar (opcional, se usar AJAX)
             return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
         
         try:
@@ -871,10 +860,9 @@ def cadastrar_itens(request):
             messages.error(request, f'Ocorreu um erro ao salvar o item: {e}')
             return render(request, 'materiais/cadastrar_itens.html', contexto_erro)
 
-
-    # Contexto para a renderização GET (e em caso de erro)
+    # Contexto padrão GET
     context = {
-        'itens': itens_paginados, # Objeto Paginado
+        'itens': itens_paginados,
         'categorias_principais': categorias_principais_list,
         'unidades': unidades_list,
         'tags': tags_list,
@@ -885,6 +873,20 @@ def cadastrar_itens(request):
         'per_page_options': [10, 25, 50, 100],
     }
     return render(request, 'materiais/cadastrar_itens.html', context)
+
+def buscar_itens_similares(request):
+    descricao = request.GET.get('descricao', '').strip()
+    if len(descricao) < 3:
+        return JsonResponse({'status': 'curto'})
+
+    # Busca no banco itens que contenham parte da descrição informada
+    similares = ItemCatalogo.objects.filter(descricao__icontains=descricao)[:5]
+    
+    if similares.exists():
+        itens_data = [{'id': i.id, 'descricao': i.descricao, 'codigo': i.codigo} for i in similares]
+        return JsonResponse({'status': 'encontrado', 'itens': itens_data})
+    
+    return JsonResponse({'status': 'limpo'})
 
 @login_required
 def cadastrar_obras(request):
@@ -2027,8 +2029,8 @@ def enviar_rm_fornecedor(request, rm_id):
 
 @login_required
 def editar_item(request, item_id):
-    # CORREÇÃO: Acesso liberado para engenheiro, almoxarife_escritorio e diretor
-    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro','almoxarife_obra']
+    # PERMISSÕES: Inclui todos os perfis operacionais e de gestão
+    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
     if request.user.perfil not in PERFIS_PERMITIDOS:
         messages.error(request, 'Você não tem permissão para editar itens do catálogo.')
         return redirect('materiais:dashboard')
@@ -2036,7 +2038,6 @@ def editar_item(request, item_id):
     item_para_editar = get_object_or_404(ItemCatalogo, id=item_id)
 
     if request.method == 'POST':
-        # Pega os dados enviados pelo formulário
         subcategoria_id = request.POST.get('subcategoria')
         descricao = request.POST.get('descricao')
         unidade_id = request.POST.get('unidade')
@@ -2044,28 +2045,42 @@ def editar_item(request, item_id):
         status_ativo = request.POST.get('status') == 'on'
 
         if not all([descricao, subcategoria_id, unidade_id]):
-            messages.error(request, 'Todos os campos obrigatórios devem ser preenchidos.')
+            messages.error(request, 'Todos os campos obrigatórios (Descrição, Subcategoria e Unidade) devem ser preenchidos.')
         else:
             try:
-                # Atualiza o objeto existente com os novos dados
-                item_para_editar.categoria_id = subcategoria_id
-                item_para_editar.descricao = descricao
-                item_para_editar.unidade_id = unidade_id
-                item_para_editar.ativo = status_ativo
-                item_para_editar.tags.set(tags_ids)
-                item_para_editar.save()
+                # Verificação de duplicidade (evita renomear para algo que já existe)
+                if ItemCatalogo.objects.filter(descricao__iexact=descricao).exclude(id=item_id).exists():
+                    messages.error(request, f'Já existe outro item com a descrição "{descricao}".')
+                else:
+                    # Atualiza os campos
+                    item_para_editar.categoria_id = subcategoria_id
+                    item_para_editar.descricao = descricao
+                    item_para_editar.unidade_id = unidade_id
+                    item_para_editar.ativo = status_ativo
+                    
+                    # Atualiza as Tags (ManyToMany)
+                    item_para_editar.tags.set(tags_ids)
+                    
+                    # IMPORTANTE: Se a descrição mudou, limpamos o embedding para forçar a atualização
+                    # na próxima vez que o script de IA rodar, mantendo a busca inteligente precisa.
+                    item_para_editar.embedding = None 
+                    
+                    item_para_editar.save()
 
-                messages.success(request, f'Item "{item_para_editar.descricao}" atualizado com sucesso!')
-                return redirect('materiais:cadastrar_itens')
+                    messages.success(request, f'Item "{item_para_editar.descricao}" atualizado com sucesso!')
+                    return redirect('materiais:cadastrar_itens')
+                    
             except Exception as e:
-                messages.error(request, f'Ocorreu um erro ao atualizar o item: {e}')
+                messages.error(request, f'Erro ao atualizar o item: {str(e)}')
 
-    # Lógica para carregar a página (método GET)
+    # Lógica para carregar a página (GET)
+    # Buscamos a categoria pai para carregar a lista correta de subcategorias via contexto
+    categoria_mae = item_para_editar.categoria.categoria_mae if item_para_editar.categoria else None
+
     context = {
         'item': item_para_editar,
         'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
-        # Passamos a subcategoria atual para o template saber qual selecionar
-        'subcategorias_atuais': CategoriaItem.objects.filter(categoria_mae=item_para_editar.categoria.categoria_mae).order_by('nome'),
+        'subcategorias_atuais': CategoriaItem.objects.filter(categoria_mae=categoria_mae).order_by('nome') if categoria_mae else [],
         'unidades': UnidadeMedida.objects.all().order_by('nome'),
         'tags': Tag.objects.all().order_by('nome'),
     }
@@ -2715,295 +2730,23 @@ def apagar_item(request, item_id):
 # FUNÇÃO CORRIGIDA PARA SUBSTITUIR NO views.py
 # No topo de materiais/views.py, adicione estas importações
 from django.db.models import Q
-import google.generativeai as genai
 
 import json
 from django.db import transaction
 from django.urls import reverse
 
 # Novas importações necessárias
-import google.generativeai as genai
-from . import gemini_service
 
 # (Todas as suas outras views, como login_view, dashboard, etc., devem estar aqui)
 # ...
 
 # No topo de materiais/views.py, adicione ou confirme que estas importações existem
 from django.db.models import Q
-from . import gemini_service
 from .models import CategoriaItem, UnidadeMedida # E outros modelos que você já usa
 import math
 # E substitua a sua função api_sugerir_categoria por esta versão completa e final:
-@login_required
-@csrf_exempt
-def api_sugerir_categoria(request):
-    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
-    if request.user.perfil not in PERFIS_PERMITIDOS:
-        return JsonResponse({'success': False, 'error': 'Acesso negado.'}, status=403)
-    
-    item_description = request.GET.get('descricao', '').strip()
-    if not item_description:
-        return JsonResponse({'success': False, 'error': 'A descrição do item é obrigatória.'}, status=400)
-    
-    try:
-        # 1. GERA O EMBEDDING DO ITEM DE ENTRADA
-        input_embedding_vector = gemini_service.get_embedding_for_text(item_description)
-        if input_embedding_vector is None:
-            return JsonResponse({'success': False, 'error': 'Falha ao gerar embedding para o item. Verifique a chave da API e se o modelo de embedding está configurado.'}, status=500)
-
-        # Converte o vetor de entrada para ser comparável
-        input_vector = input_embedding_vector
-        
-        # 2. CALCULA A SIMILARIDADE DE COSSENO COM TODAS AS CATEGORIAS
-        
-        # Puxa apenas categorias que são subcategorias (têm embedding e categoria mãe)
-        all_categories = CategoriaItem.objects.select_related('categoria_mae').filter(
-            categoria_mae__isnull=False
-        ).exclude(embedding__isnull=True)
-        
-        scores = []
-        
-        # Magnitude do vetor de entrada (para a fórmula do cosseno)
-        magnitude_input = math.sqrt(sum(x*x for x in input_vector))
-
-        for category in all_categories:
-            db_vector = category.embedding
-            if not db_vector:
-                continue
-
-            # Produto escalar (Dot Product): A . B
-            dot_product = sum(a * b for a, b in zip(input_vector, db_vector))
-            
-            # Magnitude do vetor do DB: ||B||
-            magnitude_db = math.sqrt(sum(x*x for x in db_vector))
-            
-            # Similaridade de Cosseno: (A . B) / (||A|| * ||B||)
-            if magnitude_input * magnitude_db != 0:
-                similarity_score = dot_product / (magnitude_input * magnitude_db)
-            else:
-                similarity_score = 0.0
-
-            scores.append({
-                'score': similarity_score,
-                'id': category.id,
-                'mae_id': category.categoria_mae_id,
-                'nome': str(category),
-            })
-
-        # 3. FILTRA OS TOP 3 RESULTADOS POR SIMILARIDADE
-        scores.sort(key=lambda x: x['score'], reverse=True)
-        top_candidates = scores[:3]
-        
-        if not top_candidates or top_candidates[0]['score'] < 0.65:
-            # Se a melhor similaridade for baixa, enviamos apenas um prompt genérico
-            top_candidates_list = "Nenhum candidato com alta similaridade encontrado."
-        else:
-            # Envia a lista dos melhores candidatos para o Gemini validar/escolher
-            top_candidates_list = "Candidatos:\n" + "\n".join(
-                [f"Subcategoria: {c['nome']} (mae_id={c['mae_id']}, sub_id={c['id']}, Score={c['score']:.2f})" for c in top_candidates]
-            )
-
-        # 4. MONTA A LISTA DE UNIDADES (para o Gemini sugerir a melhor unidade)
-        units = UnidadeMedida.objects.all()
-        units_list = "\nUnidades:\n" + "\n".join(
-            [f"{u.sigla} (id={u.id})" for u in units]
-        )
-        
-        # 5. CHAMA O GEMINI PARA VALIDAÇÃO FINAL
-        gemini_response = gemini_service.classify_item_with_gemini(
-            item_description, top_candidates_list, units_list
-        )
-        
-        status = gemini_response.get("status")
-
-        if status == "EXISTENTE":
-            # Revalida o ID contra o banco de dados (segurança)
-            subcategoria_obj = CategoriaItem.objects.select_related('categoria_mae').get(pk=gemini_response["subcategoria_id"])
-            unidade_obj = UnidadeMedida.objects.get(pk=gemini_response["unidade_id"])
-            
-            if subcategoria_obj.categoria_mae is None:
-                return JsonResponse({'success': False, 'error': 'A IA sugeriu uma Categoria Principal em vez de uma Subcategoria existente.'}, status=400)
-                
-            response_data = {
-                'success': True, 'status': 'EXISTENTE',
-                'categoria_mae_id': subcategoria_obj.categoria_mae_id, 
-                'subcategoria_id': subcategoria_obj.id,
-                'unidade_id': unidade_obj.id
-            }
-            return JsonResponse(response_data)
-        
-        elif status == "SUGERIR_SUBCATEGORIA" or status == "SUGERIR_NOVA":
-            return JsonResponse({'success': True, **gemini_response})
-        
-        else:
-            return JsonResponse({'success': False, 'error': gemini_response.get("message", "Erro desconhecido da IA.")}, status=500)
-
-    except (CategoriaItem.DoesNotExist, UnidadeMedida.DoesNotExist):
-        return JsonResponse({'success': False, 'error': 'A IA sugeriu um ID de categoria ou unidade que não existe no banco de dados.'}, status=400)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return JsonResponse({'success': False, 'error': f'Erro interno no servidor: {str(e)}'}, status=500)
-    
-@login_required
-def cadastrar_item_inteligente_view(request):
-    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
-    if request.user.perfil not in PERFIS_PERMITIDOS:
-        messages.error(request, 'Acesso negado para o Cadastro Inteligente.')
-        return redirect('materiais:dashboard')
-
-    gemini_status = "OK"
-    gemini_message = "Pronto para usar a Classificação Inteligente."
-
-    try:
-        if not hasattr(gemini_service, 'gemini_model'):
-            gemini_status = "ERROR"
-            gemini_message = "Módulo de IA não está configurado corretamente. Contate o suporte."
-        elif not gemini_service.gemini_model:
-            gemini_status = "ERROR"
-            gemini_message = "A Chave GEMINI_API_KEY não está configurada corretamente no servidor. Contate o suporte."
-    except Exception as e:
-        gemini_status = "ERROR"
-        gemini_message = f"Erro de serviço Gemini: {str(e)}. Contate o suporte."
-
-    categorias_count = CategoriaItem.objects.filter(categoria_mae__isnull=True).count()
-    if categorias_count == 0:
-        messages.warning(request, 'Nenhuma categoria principal encontrada. Cadastre categorias antes de usar a classificação inteligente.')
-
-    context = {
-        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
-        'unidades': UnidadeMedida.objects.all().order_by('nome'),
-        'tags': Tag.objects.all().order_by('nome'),
-        'gemini_status': gemini_status,
-        'gemini_message': gemini_message,
-    }
-    return render(request, 'materiais/cadastrar_item_inteligente.html', context)
 
 
-def classify_item_with_gemini_safe(item_description: str, categories_list: str) -> dict:
-    try:
-        from . import gemini_service
-
-        if not hasattr(gemini_service, 'gemini_model') or not gemini_service.gemini_model:
-            return {
-                "status": "ERROR",
-                "message": "Serviço de IA não está disponível. Verifique a configuração da API."
-            }
-
-        if not item_description or not item_description.strip():
-            return {
-                "status": "ERROR",
-                "message": "Descrição do item não pode estar vazia."
-            }
-
-        if not categories_list or len(categories_list.strip()) < 10:
-            return {
-                "status": "ERROR",
-                "message": "Lista de categorias inválida ou vazia."
-            }
-
-        return gemini_service.classify_item_with_gemini(item_description, categories_list)
-
-    except ImportError:
-        return {
-            "status": "ERROR",
-            "message": "Módulo de IA não encontrado. Contate o suporte técnico."
-        }
-    except Exception as e:
-        return {
-            "status": "ERROR",
-            "message": f"Erro inesperado no serviço de IA: {str(e)}"
-        }
-
-
-@login_required
-@transaction.atomic
-def cadastrar_item_inteligente_submit(request):
-    PERFIS_PERMITIDOS = ['almoxarife_escritorio', 'diretor', 'engenheiro', 'almoxarife_obra']
-    if request.user.perfil not in PERFIS_PERMITIDOS:
-        messages.error(request, 'Acesso negado.')
-        return redirect('materiais:dashboard')
-
-    if request.method != 'POST':
-        return redirect('materiais:cadastrar_item_inteligente')
-
-    try:
-        descricao = request.POST.get('descricao', '').strip()
-        unidade_id = request.POST.get('unidade', '').strip()
-        tags_ids = request.POST.getlist('tags')
-        status_ativo = request.POST.get('status') == 'on'
-
-        subcategoria_id = request.POST.get('subcategoria_id_final', '').strip()
-        nova_categoria_mae = request.POST.get('nova_categoria_mae', '').strip()
-        nova_subcategoria = request.POST.get('nova_subcategoria', '').strip()
-
-        erros = []
-        if not descricao:
-            erros.append("A descrição do item é obrigatória.")
-        if not unidade_id:
-            erros.append("A unidade de medida é obrigatória.")
-        if not subcategoria_id and not (nova_categoria_mae and nova_subcategoria):
-            erros.append("É necessário selecionar uma categoria existente ou criar uma nova.")
-
-        if erros:
-            for erro in erros:
-                messages.error(request, erro)
-            return redirect('materiais:cadastrar_item_inteligente')
-
-        categoria_final_obj = None
-
-        if subcategoria_id:
-            try:
-                categoria_final_obj = get_object_or_404(CategoriaItem, id=subcategoria_id)
-            except Exception:
-                messages.error(request, "Categoria selecionada não encontrada.")
-                return redirect('materiais:cadastrar_item_inteligente')
-
-        elif nova_categoria_mae and nova_subcategoria:
-            categoria_mae_obj, mae_created = CategoriaItem.objects.get_or_create(
-                nome=nova_categoria_mae,
-                categoria_mae__isnull=True,
-                defaults={'nome': nova_categoria_mae}
-            )
-
-            categoria_final_obj, sub_created = CategoriaItem.objects.get_or_create(
-                nome=nova_subcategoria,
-                categoria_mae=categoria_mae_obj,
-                defaults={'nome': nova_subcategoria, 'categoria_mae': categoria_mae_obj}
-            )
-            if mae_created or sub_created:
-                messages.info(request, f"Nova Categoria '{categoria_final_obj}' criada automaticamente.")
-
-        if categoria_final_obj:
-            unidade_obj = get_object_or_404(UnidadeMedida, id=unidade_id)
-
-            if ItemCatalogo.objects.filter(descricao__iexact=descricao).exists():
-                messages.error(request, f'❌ Item com a descrição "{descricao}" já existe no catálogo.')
-                return redirect('materiais:cadastrar_item_inteligente')
-
-            novo_item = ItemCatalogo(
-                descricao=descricao,
-                categoria=categoria_final_obj,
-                unidade=unidade_obj,
-                ativo=status_ativo
-            )
-            novo_item.save()
-
-            if tags_ids:
-                novo_item.tags.set(tags_ids)
-
-            messages.success(request, f'✅ Item "{novo_item.descricao}" (Código: {novo_item.codigo}) cadastrado via Classificação Inteligente!')
-            return redirect('materiais:cadastrar_itens')
-        else:
-            messages.error(request, "Erro crítico na categorização. Item não pôde ser cadastrado.")
-            return redirect('materiais:cadastrar_item_inteligente')
-
-    except ValueError as ve:
-        messages.error(request, f'Erro de validação: {ve}')
-    except Exception as e:
-        messages.error(request, f'Erro inesperado ao cadastrar item: {str(e)}')
-
-    return redirect('materiais:cadastrar_item_inteligente')
 
 @login_required
 def api_subcategorias(request, categoria_id):

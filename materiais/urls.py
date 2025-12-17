@@ -36,7 +36,6 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('api/dados-confirmacao-rm/<int:cotacao_id>/', views.api_dados_confirmacao_rm, name='api_dados_confirmacao_rm'),  
     path('api/subcategorias/<int:categoria_id>/', views.api_subcategorias, name='api_subcategorias'),  
     path('api/item-check/', views.api_item_check, name='api_item_check'),  
-    path('api/sugerir-categoria/', views.api_sugerir_categoria, name='api_sugerir_categoria'),  
    
     path('gerenciar-cotacoes/', views.gerenciar_cotacoes, name='gerenciar_cotacoes'),  
     path('iniciar-cotacao/<int:solicitacao_id>/', views.iniciar_cotacao, name='iniciar_cotacao'),  
@@ -77,9 +76,6 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('solicitacao/<int:solicitacao_id>/cotacao-agregado/', views.cotacao_agregado, name='cotacao_agregado'),  
     path('solicitacao/<int:solicitacao_id>/dividir-agregado/', views.dividir_solicitacao_agregado, name='dividir_solicitacao_agregado'),  
     path('apagar-item/<int:item_id>/', views.apagar_item, name='apagar_item'),  
-  
-    path('cadastrar-item-inteligente/', views.cadastrar_item_inteligente_view, name='cadastrar_item_inteligente'),  
-    path('cadastrar-item-inteligente/submit/', views.cadastrar_item_inteligente_submit, name='cadastrar_item_inteligente_submit'),  
-  
-    path('api/sugerir-categoria/', views.api_sugerir_categoria, name='api_sugerir_categoria'),
-    ]
+    
+    path('api/item-check/', views.buscar_itens_similares, name='api_item_check'),
+      ]
