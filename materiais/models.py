@@ -178,9 +178,9 @@ class SolicitacaoCompra(models.Model):
         ('aprovado_engenharia', 'Aprovado - Engenharia'),
         ('aprovada', 'Cotação - Para Iniciar'),
         ('rejeitada', 'Rejeitada'),
-        ('em_cotacao', 'Cotação - Em Andamento'),
-        ('aguardando_resposta', 'Cotação - Aguardando Resposta'),
-        ('cotacao_selecionada', 'Cotação - Recebida/Analisar'),
+        #('em_cotacao', 'Cotação - Em Andamento'),
+        ('aguardando_resposta', 'Em Cotação'),
+        ('cotacao_selecionada', 'Cotação Recebida'),
         ('finalizada', 'RM Gerada'),
         ('a_caminho', 'A Caminho'),
         ('recebida_parcial', 'Recebida Parcialmente'),  # <-- NOVO STATUS ADICIONADO
@@ -454,10 +454,23 @@ class ItemCotacao(models.Model):
     cotacao = models.ForeignKey(Cotacao, on_delete=models.CASCADE, related_name='itens_cotados')
     item_solicitacao = models.ForeignKey(ItemSolicitacao, on_delete=models.CASCADE, related_name='itens_cotados')
     preco = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Preço do Item")
-    selecionado = models.BooleanField(default=False, verbose_name="Item Vencedor")
+    selecionado = models.BooleanField(default=False, verbose_name="Item Vencedor") # REINCLUÍDO AQUI
 
     def __str__(self):
         return f"{self.item_solicitacao.descricao} - R$ {self.preco}"
+
+    def get_subtotal(self):
+        """
+        Calcula o subtotal deste item.
+        Raiz do problema: Sem este método, o template Django não exibe valor algum.
+        """
+        if self.preco and self.item_solicitacao and self.item_solicitacao.quantidade:
+            return self.preco * self.item_solicitacao.quantidade
+        return 0
+    
+    class Meta:
+        verbose_name = "Item da Cotação"
+        verbose_name_plural = "Itens da Cotação"
 
 class HistoricoSolicitacao(models.Model):
     solicitacao = models.ForeignKey(SolicitacaoCompra, on_delete=models.CASCADE, related_name='historico')
