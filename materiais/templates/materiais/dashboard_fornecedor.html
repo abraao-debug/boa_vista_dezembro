@@ -1,0 +1,106 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Portal do Fornecedor{% endblock %}
+
+{% block content %}
+<style>
+    {% include 'materiais/styles_dashboard.css' %}
+    
+    /* Estilização dos Cards de Resumo */
+    .summary-card { 
+        padding: 1.5rem; 
+        transition: transform 0.2s, box-shadow 0.2s; 
+        border: 1px solid #e9ecef; 
+        background-color: #fff; 
+        border-radius: 8px; 
+    }
+    .summary-card:hover { 
+        transform: translateY(-5px); 
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+    }
+    .count { font-size: 2.5rem; font-weight: bold; display: block; }
+    .title { font-size: 0.9rem; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+    
+    /* Cores de borda superior padrão RM */
+    .border-aberta { border-top: 5px solid #dc3545 !important; }   /* Vermelho */
+    .border-enviada { border-top: 5px solid #ffc107 !important; }  /* Amarelo */
+    .border-comprada { border-top: 5px solid #198754 !important; } /* Verde */
+    
+    /* Padronização de botões conforme RM */
+    .btn-sm { 
+        font-size: 0.85rem !important; 
+        padding: 0.5rem 1rem !important; 
+        font-weight: 500; 
+        text-transform: uppercase;
+    }
+</style>
+
+<div class="mb-4">
+    <h4 class="mb-0">Bem-vindo, {{ user.fornecedor.nome_fantasia }}</h4>
+    <p class="text-muted small">Painel de Gerenciamento de Cotações e Pedidos de Compra</p>
+</div>
+<hr class="mb-5">
+
+<div class="row mb-5">
+    <div class="col-md-4 mb-3">
+        <a href="{% url 'materiais:lista_cotacoes_fornecedor' %}?filtro=aberto" class="text-decoration-none">
+            <div class="summary-card border-aberta shadow-sm text-center">
+                <span class="count text-danger">{{ count_abertas }}</span>
+                <span class="title">Cotações em Aberto</span>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-4 mb-3">
+        <a href="{% url 'materiais:lista_cotacoes_fornecedor' %}?filtro=enviado" class="text-decoration-none">
+            <div class="summary-card border-enviada shadow-sm text-center">
+                <span class="count text-warning">{{ count_enviadas }}</span>
+                <span class="title">Cotações Enviadas</span>
+            </div>
+        </a>
+    </div>
+    <div class="col-md-4 mb-3">
+    <a href="{% url 'materiais:lista_pedidos_fornecedor' %}" class="text-decoration-none">
+        <div class="summary-card border-comprada shadow-sm text-center">
+            <span class="count text-success">{{ count_compradas }}</span>
+            <span class="title">Cotações Compradas</span>
+        </div>
+    </a>
+</div>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-header bg-dark text-white py-3">
+        <h5 class="mb-0 small"><i class="fas fa-tasks me-2"></i>AÇÕES DISPONÍVEIS NO PORTAL</h5>
+    </div>
+    <div class="card-body p-4 bg-light">
+        <div class="row g-4">
+            <div class="col-md-6">
+                <div class="p-4 border rounded bg-white text-center h-100 shadow-sm">
+                    <div class="mb-3">
+                        <i class="fas fa-file-signature fa-3x text-primary opacity-50"></i>
+                    </div>
+                    <h5 class="fw-bold">Responder Cotações</h5>
+                    <p class="small text-muted mb-4">Visualize os itens solicitados pela Boa Vista e registre seus melhores preços e prazos de entrega.</p>
+                    
+                    <a href="{% url 'materiais:lista_cotacoes_fornecedor' %}" class="btn btn-sm btn-primary w-100 shadow-sm">
+                        <i class="fas fa-edit me-2"></i>ACESSAR COTAÇÕES PENDENTES
+                    </a>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="p-4 border rounded bg-white text-center h-100 shadow-sm">
+                    <div class="mb-3">
+                        <i class="fas fa-box-open fa-3x text-success opacity-50"></i>
+                    </div>
+                    <h5 class="fw-bold">Meus Pedidos (RMs)</h5>
+                    <p class="small text-muted mb-4">Acompanhe as Requisições de Material (RMs) onde sua empresa foi selecionada e faça o download dos pedidos.</p>
+                    
+                    <a href="#" class="btn btn-sm btn-success w-100 shadow-sm disabled">
+                        <i class="fas fa-download me-2"></i>VISUALIZAR PEDIDOS
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

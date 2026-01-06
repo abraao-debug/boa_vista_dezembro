@@ -1,0 +1,95 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Cotações Pendentes{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:dashboard_fornecedor' %}" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
+    <div>
+        <h4 class="mb-0">Solicitações de Orçamento</h4>
+        <p class="text-muted mb-0">Liste abaixo as solicitações enviadas pela Boa Vista.</p>
+    </div>
+</div>
+<hr class="mb-4">
+
+<div class="row">
+    <div class="col-12">
+        {% for sc in solicitacoes %}
+        <div class="card mb-3 shadow-sm border-start {% if sc.id in respondidas_ids %}border-success{% else %}border-warning{% endif %}" style="border-left-width: 5px !important;">
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-6">
+                        <h6 class="mb-1 fw-bold text-dark">{{ sc.nome_descritivo }}</h6>
+                        <div class="d-flex gap-3 text-muted" style="font-size: 0.85rem;">
+                            <span><i class="fas fa-hashtag me-1"></i>{{ sc.numero }}</span>
+                            <span><i class="fas fa-calendar-alt me-1"></i>Necessidade: {{ sc.data_necessidade|date:"d/m/Y" }}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6 text-end">
+                        <div class="d-flex flex-column align-items-end gap-2">
+                            {% if sc.id in respondidas_ids %}
+                                {% for cotacao in sc.cotacoes.all %}
+                                    {% if cotacao.fornecedor == user.fornecedor %}
+                                        <div class="text-end">
+                                            <span class="badge {% if cotacao.origem == 'manual' %}bg-info text-dark{% else %}bg-success{% endif %} mb-1">
+                                                {% if cotacao.origem == 'manual' %}
+                                                    <i class="fas fa-info-circle me-1"></i> Cotado pela Construtora
+                                                {% else %}
+                                                    <i class="fas fa-check-circle me-1"></i> Você enviou em {{ cotacao.data_registro|date:"d/m/Y H:i" }}
+                                                {% endif %}
+                                            </span>
+                                        </div>
+                                        <div class="d-flex gap-2">
+                                            <a href="{% url 'materiais:responder_cotacao_fornecedor' sc.id %}" class="btn btn-sm btn-primary">
+                                                <i class="fas fa-edit me-1"></i> EDITAR ORÇAMENTO
+                                            </a>
+                                            <form action="{% url 'materiais:fornecedor_excluir_propria_cotacao' sc.id %}" method="post" style="display:inline;">
+                                                {% csrf_token %}
+                                                <button type="button" class="btn btn-sm btn-danger" onclick="abrirModalExclusao(this, 'sua cotação enviada')">
+                                                    <i class="fas fa-trash-alt me-1"></i> EXCLUIR
+                                                </button>
+                                            </form>
+                                        </div>
+                                    {% endif %}
+                                {% endfor %}
+                            {% else %}
+                                <a href="{% url 'materiais:responder_cotacao_fornecedor' sc.id %}" class="btn btn-sm btn-primary px-4 shadow-sm">
+                                    <i class="fas fa-paper-plane me-1"></i> RESPONDER AGORA
+                                </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% empty %}
+        <div class="text-center p-5 bg-light rounded border">
+            <i class="fas fa-inbox fa-3x mb-3 opacity-25"></i>
+            <h5>Nenhuma cotação pendente no momento.</h5>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<script>
+    let formExclusaoPendente = null;
+    function abrirModalExclusao(btn, tipo) {
+        formExclusaoPendente = btn.closest('form');
+        const mensagem = document.getElementById('mensagemExclusao');
+        if(mensagem) {
+            mensagem.textContent = "Você está prestes a excluir " + tipo + ". Deseja continuar?";
+        }
+        // Se usar o modal global definido no base.html
+        const modal = new bootstrap.Modal(document.getElementById('modalConfirmarExclusao'));
+        modal.show();
+    }
+
+    // Listener para o botão de confirmação do modal
+    const btnConfirmar = document.getElementById('btnConfirmarExclusaoFinal');
+    if(btnConfirmar) {
+        btnConfirmar.addEventListener('click', function() {
+            if (formExclusaoPendente) formExclusaoPendente.submit();
+        });
+    }
+</script>
+{% endblock %}

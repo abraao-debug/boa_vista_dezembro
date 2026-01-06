@@ -10,11 +10,21 @@ class User(AbstractUser):
         ('engenheiro', 'Engenheiro'),
         ('almoxarife_escritorio', 'Almoxarife do Escritório'),
         ('diretor', 'Diretor'),
+        ('fornecedor', 'Fornecedor'), # <-- NOVO PERFIL
     ]
     perfil = models.CharField(max_length=30, choices=PERFIL_CHOICES)
     telefone = models.CharField(max_length=15, blank=True)
     obras = models.ManyToManyField('Obra', blank=True, related_name='usuarios')
     assinatura_imagem = models.ImageField(upload_to='assinaturas/', null=True, blank=True, verbose_name="Imagem da Assinatura")
+    
+    # Vínculo direto com o Fornecedor
+    fornecedor = models.ForeignKey(
+        'Fornecedor', 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='usuarios_fornecedor'
+    )
 
     def __str__(self):
         return f"{self.username} - {self.get_perfil_display()}"
@@ -55,8 +65,8 @@ class Fornecedor(models.Model):
     logradouro = models.CharField(max_length=255, blank=True, verbose_name="Logradouro")
     numero = models.CharField(max_length=20, blank=True, verbose_name="Número")
     bairro = models.CharField(max_length=100, blank=True, verbose_name="Bairro")
-    cidade = models.CharField(max_length=100, blank=True, verbose_name="Cidade")
-    estado = models.CharField(max_length=2, blank=True, verbose_name="UF")
+    cidade = models.CharField(max_length=100, default="Não Informada") 
+    estado = models.CharField(max_length=2, default="PI")
     ativo = models.BooleanField(default=True)
 
     def __str__(self):
@@ -424,18 +434,52 @@ class ItemRecebido(models.Model):
         verbose_name_plural = "Itens Recebidos"
 
 class Cotacao(models.Model):
+    # Opções para o Semáforo de Conformidade
+    CONFORMIDADE_CHOICES = [
+        ('verde', 'Total Conformidade'),
+        ('amarelo', 'Atenção Comercial'),
+        ('vermelho', 'Divergência Crítica'),
+    ]
+
+    # Opções de Origem do Registro
+    ORIGEM_CHOICES = [
+        ('portal', 'Portal Fornecedor'),
+        ('manual', 'Manual Escritório'),
+    ]
+
+    # --- RELACIONAMENTOS ---
     solicitacao = models.ForeignKey(SolicitacaoCompra, on_delete=models.CASCADE, related_name='cotacoes')
-    fornecedor = models.ForeignKey(Fornecedor, on_delete=models.CASCADE)
+    fornecedor = models.ForeignKey(Fornecedor, on_delete=models.CASCADE, related_name='cotacoes')
+    registrado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='cotacoes_inseridas')
+    endereco_entrega = models.ForeignKey(DestinoEntrega, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Endereço de Entrega")
+    
+    # --- AUDITORIA E STATUS ---
+    origem = models.CharField(max_length=20, choices=ORIGEM_CHOICES, default='portal')
+    data_registro = models.DateTimeField(auto_now_add=True)
     data_cotacao = models.DateTimeField(auto_now_add=True, verbose_name="Data da Cotação")
+    vencedora = models.BooleanField(default=False, verbose_name="Cotação Vencedora")
+    
+    # --- CONDIÇÕES COMERCIAIS FINAIS ---
     prazo_entrega = models.CharField(max_length=100, blank=True, verbose_name="Prazo de Entrega")
     condicao_pagamento = models.CharField(max_length=100, blank=True, verbose_name="Condição de Pagamento")
-    observacoes = models.TextField(blank=True, verbose_name="Observações")
-    vencedora = models.BooleanField(default=False, verbose_name="Cotação Vencedora")
     valor_frete = models.DecimalField(max_digits=10, decimal_places=2, default=0, verbose_name="Valor do Frete")
-    endereco_entrega = models.ForeignKey(DestinoEntrega, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Endereço de Entrega")
+    observacoes = models.TextField(blank=True, verbose_name="Observações")
+
+    # --- LÓGICA DE CONTRAPROPOSTA E COMPARAÇÃO ---
+    # Guarda o que a Boa Vista pediu originalmente no momento do envio
+    prazo_original_escritorio = models.CharField(max_length=100, blank=True, null=True)
+    pagamento_original_escritorio = models.CharField(max_length=100, blank=True, null=True)
+    
+    # Classificação automática baseada na conformidade das respostas
+    conformidade = models.CharField(max_length=10, choices=CONFORMIDADE_CHOICES, default='verde')
+    
+    # Justificativas técnicas (Motivos Rápidos) selecionados no Portal
+    motivo_divergencia_prazo = models.CharField(max_length=100, blank=True, null=True)
+    motivo_divergencia_pagamento = models.CharField(max_length=100, blank=True, null=True)
 
     @property
     def valor_total(self):
+        """Calcula o valor total somando itens e frete."""
         from django.db.models import Sum, F
         total_itens = self.itens_cotados.aggregate(
             total=Sum(F('preco') * F('item_solicitacao__quantidade'))
@@ -445,10 +489,10 @@ class Cotacao(models.Model):
     class Meta:
         verbose_name = "Cotação"
         verbose_name_plural = "Cotações"
+        unique_together = ('solicitacao', 'fornecedor')
 
     def __str__(self):
         return f"Cotação {self.id} de {self.fornecedor.nome_fantasia} para SC {self.solicitacao.numero}"
-
     
 class ItemCotacao(models.Model):
     cotacao = models.ForeignKey(Cotacao, on_delete=models.CASCADE, related_name='itens_cotados')
@@ -513,3 +557,19 @@ class EnvioCotacao(models.Model):
     class Meta:
         verbose_name = "Envio de Cotação"
         verbose_name_plural = "Envios de Cotação"
+
+class Notificacao(models.Model):
+    usuario_destino = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notificacoes')
+    titulo = models.CharField(max_length=100)
+    mensagem = models.TextField()
+    link = models.CharField(max_length=255, blank=True, null=True)
+    lida = models.BooleanField(default=False)
+    data_criacao = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Notificação"
+        verbose_name_plural = "Notificações"
+        ordering = ['-data_criacao']
+
+    def __str__(self):
+        return f"{self.usuario_destino.username} - {self.titulo}"

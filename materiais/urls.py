@@ -81,4 +81,9 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('api/item-check/', views.buscar_itens_similares, name='api_item_check'),
     path('envio-cotacao/excluir/<int:envio_id>/', views.excluir_envio_cotacao, name='excluir_envio_cotacao'),
     path('solicitacao/<int:solicitacao_id>/finalizar-coleta/', views.finalizar_coleta_precos, name='finalizar_coleta_precos'),
-      ]
+    path('fornecedor/dashboard/', views.dashboard_fornecedor, name='dashboard_fornecedor'),
+    path('fornecedor/responder/<int:solicitacao_id>/', views.responder_cotacao_fornecedor, name='responder_cotacao_fornecedor'),
+    path('fornecedor/minhas-cotacoes/', views.lista_cotacoes_fornecedor, name='lista_cotacoes_fornecedor'),
+    path('fornecedor/excluir-cotacao/<int:solicitacao_id>/', views.fornecedor_excluir_propria_cotacao, name='fornecedor_excluir_propria_cotacao'),
+    path('fornecedor/meus-pedidos/', views.lista_pedidos_fornecedor, name='lista_pedidos_fornecedor'),
+        ]

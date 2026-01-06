@@ -1,0 +1,212 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Responder Cotação{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:lista_cotacoes_fornecedor' %}" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
+    <div>
+        <h4 class="mb-0">Registrar Orçamento</h4>
+        <p class="text-muted mb-0">Solicitação: {{ solicitacao.nome_descritivo }} ({{ solicitacao.numero }})</p>
+    </div>
+</div>
+<hr class="mb-4">
+
+<form method="POST" id="formResponder">
+    {% csrf_token %}
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-dark text-white">
+            <h6 class="mb-0 small text-uppercase">Itens Solicitados</h6>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr style="font-size: 0.8rem;">
+                        <th>DESCRIÇÃO DO MATERIAL</th>
+                        <th class="text-center">QUANTIDADE</th>
+                        <th class="text-end" style="width: 200px;">PREÇO UNITÁRIO (R$)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in solicitacao.itens.all %}
+                    <tr>
+                        <td>
+                            <div class="fw-bold text-dark">{{ item.descricao }}</div>
+                            <small class="text-muted">{{ item.observacoes|default:"" }}</small>
+                        </td>
+                        <td class="text-center">
+                            <span class="badge bg-light text-dark border">{{ item.quantidade|floatformat:0 }} {{ item.unidade }}</span>
+                        </td>
+                        <td class="text-end">
+                            <input type="text" name="preco_{{ item.id }}" class="form-control form-control-sm text-end mask-money" 
+                                   required placeholder="0,00" 
+                                   value="{% for ic in cotacao.itens_cotados.all %}{% if ic.item_solicitacao_id == item.id %}{{ ic.preco|floatformat:2 }}{% endif %}{% endfor %}">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-7">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-header bg-dark text-white fw-bold">
+                    <i class="fas fa-handshake me-2"></i> CONDIÇÕES COMERCIAIS (OBRIGATÓRIO)
+                </div>
+                <div class="card-body bg-light">
+                    
+                    <div class="mb-4 p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small d-block mb-2 text-uppercase">1. Prazo de Entrega Desejado</label>
+                        <div class="alert alert-info py-2 mb-3" style="font-size: 0.9rem;">
+                            <i class="fas fa-calendar-alt me-2 text-primary"></i> Necessário para: <strong>{{ solicitacao.data_necessidade|date:"d/m/Y" }}</strong>
+                        </div>
+                        
+                        <div class="btn-group w-100 mb-3" role="group">
+                            <input type="radio" class="btn-check" name="aceita_prazo" id="prazo_sim" value="sim" required onclick="gerenciarDivergencia('prazo', false)">
+                            <label class="btn btn-outline-success btn-sm" for="prazo_sim"><i class="fas fa-check me-1"></i> ATENDO O PRAZO</label>
+
+                            <input type="radio" class="btn-check" name="aceita_prazo" id="prazo_nao" value="nao" onclick="gerenciarDivergencia('prazo', true)">
+                            <label class="btn btn-outline-danger btn-sm" for="prazo_nao"><i class="fas fa-times me-1"></i> PROPOR NOVA DATA</label>
+                        </div>
+
+                        <div id="box_divergencia_prazo" style="display:none;" class="p-3 border-start border-danger border-4 bg-light rounded shadow-sm">
+                            <label class="small fw-bold text-danger mb-1">MOTIVO TÉCNICO DO AJUSTE:</label>
+                            <select name="motivo_divergencia_prazo" id="sel_motivo_prazo" class="form-select form-select-sm mb-3" onchange="verificarOutroMotivo(this, 'campo_outro_prazo')">
+                                <option value="">Selecione um motivo...</option>
+                                <option value="Aguardando reposição de estoque">Aguardando reposição de estoque</option>
+                                <option value="Logística/Rota semanal para a região">Logística/Rota semanal para a região</option>
+                                <option value="Prazo de fabricação do item">Prazo de fabricação do item</option>
+                                <option value="Outro">Outro motivo (especificar)</option>
+                            </select>
+                            
+                            <div id="campo_outro_prazo" class="mb-3" style="display:none;">
+                                <label class="small fw-bold text-muted mb-1 text-uppercase">Descreva o Motivo:</label>
+                                <input type="text" name="outro_motivo_prazo" class="form-control form-control-sm" placeholder="Digite o motivo detalhado para auditoria">
+                            </div>
+                            
+                            <label class="small fw-bold text-danger mb-1">DATA REAL DE ENTREGA:</label>
+                            <input type="date" name="prazo_entrega_data" id="input_prazo" class="form-control form-control-sm">
+                        </div>
+                    </div>
+
+                    <div class="mb-4 p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small d-block mb-2 text-uppercase">2. Condição de Pagamento Solicitada</label>
+                        <div class="alert alert-info py-2 mb-3" style="font-size: 0.9rem;">
+                            <i class="fas fa-wallet me-2 text-primary"></i> Solicitado: 
+                            <strong>
+                                {% with envio=solicitacao.envios_cotacao.first %}
+                                    {{ envio.get_forma_pagamento_display }} / {{ envio.prazo_pagamento }} dias
+                                {% endwith %}
+                            </strong>
+                        </div>
+
+                        <div class="btn-group w-100 mb-3" role="group">
+                            <input type="radio" class="btn-check" name="aceita_pagamento" id="pgto_sim" value="sim" required onclick="gerenciarDivergencia('pgto', false)">
+                            <label class="btn btn-outline-success btn-sm" for="pgto_sim"><i class="fas fa-check me-1"></i> ACEITO CONDIÇÃO</label>
+
+                            <input type="radio" class="btn-check" name="aceita_pagamento" id="pgto_nao" value="nao" onclick="gerenciarDivergencia('pgto', true)">
+                            <label class="btn btn-outline-danger btn-sm" for="pgto_nao"><i class="fas fa-exchange-alt me-1"></i> SUGERIR AJUSTE</label>
+                        </div>
+
+                        <div id="box_divergencia_pgto" style="display:none;" class="p-3 border-start border-danger border-4 bg-light rounded shadow-sm">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-7">
+                                    <label class="small fw-bold text-danger mb-1">FORMA DE PAGAMENTO:</label>
+                                    <select name="nova_forma_pagamento" id="sel_forma_pgto" class="form-select form-select-sm">
+                                        <option value="">Selecione...</option>
+                                        <option value="avista">À Vista</option>
+                                        <option value="boleto">Boleto Bancário</option>
+                                        <option value="pix">PIX</option>
+                                        <option value="cartao">Cartão de Crédito</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-5">
+                                    <label class="small fw-bold text-danger mb-1">PRAZO (DIAS):</label>
+                                    <input type="number" name="novo_prazo_dias" id="input_pgto_dias" class="form-control form-control-sm" placeholder="Ex: 30">
+                                </div>
+                            </div>
+                            
+                            <label class="small fw-bold text-danger mb-1">JUSTIFICATIVA COMERCIAL:</label>
+                            <select name="motivo_divergencia_pagamento" id="sel_motivo_pgto" class="form-select form-select-sm" onchange="verificarOutroMotivo(this, 'campo_outro_pgto')">
+                                <option value="">Selecione o motivo...</option>
+                                <option value="Norma interna para novos cadastros">Norma interna para novos cadastros</option>
+                                <option value="Limite de crédito insuficiente">Limite de crédito insuficiente</option>
+                                <option value="Valor abaixo do faturamento mínimo">Valor abaixo do faturamento mínimo</option>
+                                <option value="Outro">Outro motivo (especificar)</option>
+                            </select>
+
+                            <div id="campo_outro_pgto" class="mt-3" style="display:none;">
+                                <label class="small fw-bold text-muted mb-1 text-uppercase">Especifique a Justificativa:</label>
+                                <input type="text" name="outro_motivo_pagamento" class="form-control form-control-sm" placeholder="Descreva o motivo comercial detalhadamente">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small d-block mb-1 text-uppercase">3. Valor do Frete (R$)</label>
+                        <input type="number" step="0.01" name="valor_frete" class="form-control" value="{{ cotacao.valor_frete|default:0 }}" required>
+                        <small class="text-muted">Se o frete for CIF (incluso), mantenha 0,00.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-5">
+            <div class="alert alert-info shadow-sm h-100 mb-0">
+                <h6 class="fw-bold"><i class="fas fa-info-circle me-2"></i>Instruções de Preenchimento</h6>
+                <ul class="small mb-4">
+                    <li>Preços devem conter impostos inclusos.</li>
+                    <li>As divergências técnicas serão analisadas pela diretoria antes da aprovação.</li>
+                    <li>A data de entrega e condição de pagamento proposta influenciam diretamente na geração da RM.</li>
+                </ul>
+                
+                <div class="card border-0 shadow-sm mb-3">
+                    <div class="card-body p-3 bg-white rounded text-center">
+                        <p class="small text-muted mb-3">Clique abaixo para submeter sua proposta oficial.</p>
+                        <button type="submit" class="btn btn-success w-100 py-3 fw-bold shadow-lg">
+                            <i class="fas fa-paper-plane me-2"></i>ENVIAR ORÇAMENTO PARA ANÁLISE
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+{% endblock %}
+
+{% block javascript %}
+<script>
+$(document).ready(function(){
+    $('.mask-money').mask('000.000.000.000.000,00', {reverse: true});
+});
+
+function gerenciarDivergencia(tipo, divergiu) {
+    const box = document.getElementById('box_divergencia_' + tipo);
+    const inputs = box.querySelectorAll('input, select');
+    
+    if (divergiu) {
+        box.style.display = 'block';
+        inputs.forEach(el => { 
+            if(!el.parentNode.id.includes('outro')) el.required = true; 
+        });
+    } else {
+        box.style.display = 'none';
+        inputs.forEach(el => el.required = false);
+    }
+}
+
+function verificarOutroMotivo(selectElement, campoId) {
+    const campoExtra = document.getElementById(campoId);
+    const inputExtra = campoExtra.querySelector('input');
+    
+    if (selectElement.value === "Outro") {
+        campoExtra.style.display = 'block';
+        inputExtra.required = true;
+    } else {
+        campoExtra.style.display = 'none';
+        inputExtra.required = false;
+    }
+}
+</script>
+{% endblock %}
