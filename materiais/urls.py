@@ -14,6 +14,7 @@ urlpatterns = [
     # Dashboard
 path('dashboard/', views.dashboard, name='dashboard'),  
       
+    # Solicitações
     path('minhas-solicitacoes/', views.minhas_solicitacoes, name='minhas_solicitacoes'),  
     path('solicitacoes/', views.lista_solicitacoes, name='lista_solicitacoes'),  
     path('nova-solicitacao/', views.nova_solicitacao, name='nova_solicitacao'),  
@@ -30,10 +31,12 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('rejeitar-pelo-escritorio/<int:solicitacao_id>/', views.rejeitar_pelo_escritorio, name='rejeitar_pelo_escritorio'),  
       
     path('api/solicitacao-itens/<int:solicitacao_id>/', views.api_solicitacao_itens, name='api_solicitacao_itens'),  
+    path('api/verificar-envios-anteriores/<int:solicitacao_id>/', views.api_verificar_envios_anteriores, name='api_verificar_envios_anteriores'),  
     path('api/itens-filtrados/', views.api_itens_filtrados, name='api_itens_filtrados'),  
     path('api/solicitacao/<int:solicitacao_id>/detalhes/', views.api_solicitacao_detalhes, name='api_solicitacao_detalhes'),  
     path('api/buscar-fornecedores/', views.api_buscar_fornecedores, name='api_buscar_fornecedores'),  
     path('api/dados-confirmacao-rm/<int:cotacao_id>/', views.api_dados_confirmacao_rm, name='api_dados_confirmacao_rm'),  
+    path('api/validar-senha/', views.api_validar_senha, name='api_validar_senha'),  
     path('api/subcategorias/<int:categoria_id>/', views.api_subcategorias, name='api_subcategorias'),  
     path('api/item-check/', views.api_item_check, name='api_item_check'),
     path('item/apagar/<int:item_id>/', views.apagar_item, name='apagar_item'),  
@@ -86,4 +89,7 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('fornecedor/minhas-cotacoes/', views.lista_cotacoes_fornecedor, name='lista_cotacoes_fornecedor'),
     path('fornecedor/excluir-cotacao/<int:solicitacao_id>/', views.fornecedor_excluir_propria_cotacao, name='fornecedor_excluir_propria_cotacao'),
     path('fornecedor/meus-pedidos/', views.lista_pedidos_fornecedor, name='lista_pedidos_fornecedor'),
+    
+    path('notificacao/lida/<int:notificacao_id>/', views.marcar_notificacao_lida, name='marcar_notificacao_lida'),
+    path('fornecedor/pedidos/', views.lista_pedidos_fornecedor, name='lista_pedidos_fornecedor'),
         ]

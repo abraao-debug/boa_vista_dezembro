@@ -92,11 +92,19 @@
                 <td class="label">Solicitante:</td><td colspan="3">{{ solicitacao.solicitante.get_full_name|default:solicitacao.solicitante.username }}</td>
             </tr>
             <tr>
-                <td class="label">Obra:</td><td colspan="3">{{ solicitacao.obra.nome }} - {{ solicitacao.obra.endereco }}</td>
+                <td class="label">Obra:</td><td colspan="3">{{ solicitacao.obra.nome }}</td>
             </tr>
             <tr>
                 <td class="label">Destino da Entrega:</td>
-                <td colspan="3">{% if solicitacao.destino %}{{ solicitacao.destino.nome }}{% else %}Endereço da Obra{% endif %}</td>
+                <td colspan="3">
+                    {% if rm.cotacao_vencedora.endereco_entrega %}
+                        {{ rm.cotacao_vencedora.endereco_entrega.nome }} - {{ rm.cotacao_vencedora.endereco_entrega.endereco }}
+                    {% elif solicitacao.destino %}
+                        {{ solicitacao.destino.nome }} - {{ solicitacao.destino.endereco }}
+                    {% else %}
+                        Endereço da Obra
+                    {% endif %}
+                </td>
             </tr>
             <tr>
                 <td class="label">Nome da SC:</td><td colspan="3">{{ solicitacao.nome_descritivo }}</td>

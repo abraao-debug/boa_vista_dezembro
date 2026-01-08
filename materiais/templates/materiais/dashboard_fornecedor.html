@@ -25,7 +25,30 @@
     .border-enviada { border-top: 5px solid #ffc107 !important; }  /* Amarelo */
     .border-comprada { border-top: 5px solid #198754 !important; } /* Verde */
     
-    /* Padronização de botões conforme RM */
+    /* Estilo de Notificações */
+    .notification-badge {
+        position: absolute;
+        top: -5px;
+        right: -5px;
+        padding: 5px 8px;
+        border-radius: 50%;
+        background: #dc3545;
+        color: white;
+        font-size: 0.7rem;
+        font-weight: bold;
+        border: 2px solid white;
+    }
+    .notification-item {
+        border-left: 4px solid #0d6efd;
+        transition: background 0.2s;
+    }
+    .notification-item:hover {
+        background-color: #f8f9fa;
+    }
+    .notification-unread {
+        background-color: #f0f7ff;
+    }
+
     .btn-sm { 
         font-size: 0.85rem !important; 
         padding: 0.5rem 1rem !important; 
@@ -34,10 +57,41 @@
     }
 </style>
 
-<div class="mb-4">
-    <h4 class="mb-0">Bem-vindo, {{ user.fornecedor.nome_fantasia }}</h4>
-    <p class="text-muted small">Painel de Gerenciamento de Cotações e Pedidos de Compra</p>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h4 class="mb-0">Bem-vindo, {{ user.fornecedor.nome_fantasia }}</h4>
+        <p class="text-muted small">Painel de Gerenciamento de Cotações e Pedidos de Compra</p>
+    </div>
+    
+    <div class="position-relative">
+        <button class="btn btn-outline-dark border-0 shadow-none" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            <i class="fas fa-bell fa-lg"></i>
+            {% if novos_alertas > 0 %}
+                <span class="notification-badge">{{ novos_alertas }}</span>
+            {% endif %}
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow border-0 p-0" style="min-width: 320px; overflow: hidden;">
+            <li class="bg-dark text-white p-2 text-center small fw-bold">CENTRAL DE ALERTAS</li>
+            <div style="max-height: 350px; overflow-y: auto;">
+                {% for alerta in alertas_recentes %}
+                    <li>
+                        <a class="dropdown-item p-3 border-bottom notification-item notification-unread" href="{% url 'materiais:marcar_notificacao_lida' alerta.id %}">
+                            <div class="d-flex justify-content-between align-items-start mb-1">
+                                <strong class="small text-primary text-uppercase">{{ alerta.titulo }}</strong>
+                                <small class="text-muted" style="font-size: 0.65rem;">{{ alerta.data_criacao|timesince }}</small>
+                            </div>
+                            <p class="mb-0 small text-dark" style="white-space: normal;">{{ alerta.mensagem }}</p>
+                        </a>
+                    </li>
+                {% empty %}
+                    <li class="p-4 text-center text-muted small">Nenhuma notificação nova.</li>
+                {% endfor %}
+            </div>
+            <li><a class="dropdown-item text-center small py-2 bg-light text-muted" href="#">Ver todas as notificações</a></li>
+        </ul>
+    </div>
 </div>
+
 <hr class="mb-5">
 
 <div class="row mb-5">
@@ -95,7 +149,7 @@
                     <h5 class="fw-bold">Meus Pedidos (RMs)</h5>
                     <p class="small text-muted mb-4">Acompanhe as Requisições de Material (RMs) onde sua empresa foi selecionada e faça o download dos pedidos.</p>
                     
-                    <a href="#" class="btn btn-sm btn-success w-100 shadow-sm disabled">
+                    <a href="{% url 'materiais:lista_pedidos_fornecedor' %}" class="btn btn-sm btn-success w-100 shadow-sm">
                         <i class="fas fa-download me-2"></i>VISUALIZAR PEDIDOS
                     </a>
                 </div>

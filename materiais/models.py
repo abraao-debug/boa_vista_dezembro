@@ -31,14 +31,22 @@ class User(AbstractUser):
 
 
 class DestinoEntrega(models.Model):
-    nome = models.CharField(max_length=150, unique=True, verbose_name="Nome do Local")
+    obra = models.ForeignKey(
+        'Obra',
+        on_delete=models.CASCADE,
+        related_name='destinos',
+        verbose_name="Obra"
+    )
+    nome = models.CharField(max_length=150, verbose_name="Nome do Local")
+    endereco = models.CharField(max_length=300, blank=True, verbose_name="Endereço Completo")
 
     def __str__(self):
-        return self.nome
+        return f"{self.obra.nome} - {self.nome}"
 
     class Meta:
         verbose_name = "Destino de Entrega"
         verbose_name_plural = "Destinos de Entrega"
+        unique_together = [['obra', 'nome']]
 
 class Fornecedor(models.Model):
     TIPO_CHOICES = [
@@ -199,13 +207,14 @@ class SolicitacaoCompra(models.Model):
     ]
     numero = models.CharField(max_length=100, unique=True, blank=True, verbose_name="Código")
     solicitante = models.ForeignKey(User, on_delete=models.CASCADE, related_name='solicitacoes')
-    obra = models.ForeignKey(Obra, on_delete=models.CASCADE, null=True, blank=True)
+    obra = models.ForeignKey(Obra, on_delete=models.CASCADE, null=True, blank=True, related_name='solicitacoes_origem')
     destino = models.ForeignKey(
-        DestinoEntrega,
+        Obra,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        verbose_name="Destino de Entrega"
+        related_name='solicitacoes_destino',
+        verbose_name="Obra de Destino"
     )
     categoria_sc = models.ForeignKey(
         CategoriaSC, 
@@ -451,7 +460,7 @@ class Cotacao(models.Model):
     solicitacao = models.ForeignKey(SolicitacaoCompra, on_delete=models.CASCADE, related_name='cotacoes')
     fornecedor = models.ForeignKey(Fornecedor, on_delete=models.CASCADE, related_name='cotacoes')
     registrado_por = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='cotacoes_inseridas')
-    endereco_entrega = models.ForeignKey(DestinoEntrega, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Endereço de Entrega")
+    endereco_entrega = models.ForeignKey(Obra, on_delete=models.SET_NULL, null=True, blank=True, related_name='cotacoes_entrega', verbose_name="Obra de Entrega")
     
     # --- AUDITORIA E STATUS ---
     origem = models.CharField(max_length=20, choices=ORIGEM_CHOICES, default='portal')
@@ -550,6 +559,7 @@ class EnvioCotacao(models.Model):
     # --- CAMPOS ADICIONADOS ---
     forma_pagamento = models.CharField(max_length=20, choices=FORMAS_PAGAMENTO, default='a_negociar', verbose_name="Forma de Pagamento Sugerida")
     prazo_pagamento = models.PositiveIntegerField(default=0, verbose_name="Prazo de Pagamento (dias)", help_text="Prazo de pagamento sugerido ao fornecedor em dias.")
+    data_entrega_solicitada = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return f"Envio para {self.fornecedor.nome_fantasia} - SC {self.solicitacao.numero}"
@@ -573,3 +583,18 @@ class Notificacao(models.Model):
 
     def __str__(self):
         return f"{self.usuario_destino.username} - {self.titulo}"
+    
+class NotificacaoFornecedor(models.Model):
+    fornecedor = models.ForeignKey(Fornecedor, on_delete=models.CASCADE, related_name='notificacoes')
+    titulo = models.CharField(max_length=150)
+    mensagem = models.TextField()
+    link = models.CharField(max_length=255, blank=True, null=True)
+    lida = models.BooleanField(default=False)
+    data_criacao = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-data_criacao']
+
+    def __str__(self):
+        return f"{self.titulo} - {self.fornecedor.nome_fantasia}"
+

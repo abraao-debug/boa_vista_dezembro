@@ -1,59 +1,99 @@
-{% comment %} Modal para Solicitar Cotação a Fornecedores {% endcomment %}
+{% comment %} 
+  MODAL ETAPA 1: CONFIGURAÇÃO DA COTAÇÃO
+  - Cabeçalho suave (modal-header-suave) com fundo branco para evitar poluição visual.
+  - Título dinâmico mantendo o ID esperado pelo JavaScript.
+  - Integração dinâmica com EnvioCotacao.FORMAS_PAGAMENTO do Models.py.
+{% endcomment %}
 <div class="modal fade" id="solicitarCotacaoModal" tabindex="-1" aria-labelledby="solicitarCotacaoModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered">
-    <div class="modal-content">
-      <form id="formSolicitarCotacao" method="POST">
-        {% csrf_token %}
-        <div class="modal-header">
-          <h5 class="modal-title" id="solicitarCotacaoModalLabel">Solicitar Cotação</h5>
+    <div class="modal-content border-0 shadow-lg">
+      <form id="formPrepararCotacao">
+        <div class="modal-header modal-header-suave py-3">
+          <h5 class="modal-title fw-normal" id="solicitarCotacaoModalLabel">
+            Solicitar Cotação: <span id="sc_name_display" class="fw-light text-muted"></span>
+          </h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
-        <div class="modal-body">
+        
+        <div class="modal-body p-4">
           <div class="row">
-            <div class="col-md-7">
+            <div class="col-md-7 border-end">
               <div class="mb-3">
-                <label for="fornecedorSelect" class="form-label">Buscar Fornecedores *</label>
+                <label class="form-label text-muted small fw-bold">BUSCAR FORNECEDORES *</label>
                 <select id="fornecedorSelect" name="fornecedor" class="form-control" style="width: 100%;" required multiple="multiple"></select>
-                <div class="form-text" id="fornecedorCounter">0 fornecedor(es) selecionado(s)</div>
+                <div class="form-text" id="fornecedorCounter" style="font-size: 0.7rem;">Nenhum fornecedor selecionado</div>
               </div>
+              
               <div class="row">
                 <div class="col-md-6 mb-3">
-                  <label for="prazo_resposta" class="form-label">Prazo para Resposta</label>
-                  <input type="date" class="form-control" id="prazo_resposta" name="prazo_resposta">
+                  <label class="form-label text-muted small fw-bold">PRAZO PARA RESPOSTA</label>
+                  <input type="date" class="form-control form-control-sm border-light-subtle" name="prazo_resposta">
                 </div>
                 <div class="col-md-6 mb-3">
-                  <label for="forma_pagamento" class="form-label">Forma de Pagamento *</label>
-                  <select class="form-select" name="forma_pagamento" id="forma_pagamento" required>
-                      <option value="a_negociar">A Negociar</option>
-                      <option value="avista">À Vista</option>
-                      <option value="pix">Pix</option>
-                      <option value="boleto">Boleto Bancário</option>
-                      <option value="cartao_credito">Cartão de Crédito</option>
+                  <label class="form-label text-muted small fw-bold">FORMA DE PAGAMENTO *</label>
+                  <select class="form-select form-select-sm border-light-subtle" name="forma_pagamento" required>
+                      {% for valor, label in formas_pagamento %}
+                          <option value="{{ valor }}" {% if valor == 'a_negociar' %}selected{% endif %}>{{ label }}</option>
+                      {% endfor %}
                   </select>
                 </div>
               </div>
-               <div class="mb-3">
-                <label for="prazo_pagamento" class="form-label">Prazo de Pagamento (dias)</label>
-                <input type="number" class="form-control" name="prazo_pagamento" id="prazo_pagamento" value="0" min="0">
-              </div>
+
               <div class="mb-3">
-                <label for="observacoes" class="form-label">Observações</label>
-                <textarea class="form-control" name="observacoes" id="observacoes" rows="2" placeholder="Informações adicionais para os fornecedores..."></textarea>
+                <label class="form-label text-muted small fw-bold">PRAZO DE PAGAMENTO (DIAS) *</label>
+                <input type="number" class="form-control form-control-sm border-light-subtle" name="prazo_pagamento" id="prazo_pagamento_input" placeholder="Ex: 28" required>
+                <div class="form-text text-danger" style="font-size: 0.65rem;">* Obrigatório definir o prazo para prosseguir.</div>
+              </div>
+
+              <div class="mb-3">
+                <label class="form-label text-muted small fw-bold">OBSERVAÇÕES PARA O FORNECEDOR</label>
+                <textarea class="form-control form-control-sm border-light-subtle" name="observacoes" rows="3" placeholder="Ex: Entregar em horário comercial, NF acompanhando material..."></textarea>
               </div>
             </div>
+
             <div class="col-md-5">
-              <label class="form-label">Itens para Cotação *</label>
-              <div id="itensParaCotacaoList" class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
-                <p class="text-muted text-center">Carregando itens...</p>
+              <label class="form-label text-muted small fw-bold">ITENS SELECIONADOS *</label>
+              <div id="itensParaCotacaoList" class="border rounded p-2 bg-light-subtle" style="max-height: 380px; overflow-y: auto;">
+                <p class="text-muted text-center py-5 small italic">Carregando itens da solicitação...</p>
               </div>
             </div>
           </div>
         </div>
-<div class="modal-footer">
-  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-  <button type="submit" class="btn btn-success">Registrar e Gerar E-mails</button>
-</div>
+        
+        <div class="modal-footer bg-light border-0 py-3">
+          <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">CANCELAR</button>
+          <button type="submit" class="btn btn-primary btn-sm px-4 fw-bold shadow-sm">
+            PROSSEGUIR PARA DISPARO <i class="fas fa-chevron-right ms-1"></i>
+          </button>
+        </div>
       </form>
     </div>
   </div>
+</div>
+
+{% comment %} 
+  MODAL ETAPA 2: GERENCIAMENTO DE DISPARO INDIVIDUAL
+  - Implementa a interface para o fluxo de contingência (Auto / Manual).
+  - Bloqueio de segurança (data-bs-backdrop="static") para evitar fechamento acidental durante disparos.
+{% endcomment %}
+<div class="modal fade" id="modalDisparoIndividual" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false" aria-hidden="true">
+    <div class="modal-dialog modal-md modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-primary text-white border-0 py-3">
+                <h6 class="modal-title fw-normal"><i class="fas fa-paper-plane me-2"></i>Gerenciar Envio de Convites</h6>
+            </div>
+            <div class="modal-body p-0">
+                <div class="p-3 bg-light border-bottom">
+                    <p class="text-muted mb-0 small">Escolha como cada fornecedor deve receber a cotação:</p>
+                </div>
+                <div id="listaDisparoFornecedores" class="list-group list-group-flush">
+                </div>
+            </div>
+            <div class="modal-footer bg-light border-0 py-3">
+                <button type="button" id="btnConcluirTudo" class="btn btn-success btn-sm w-100 py-2 fw-bold shadow-sm" disabled>
+                    <i class="fas fa-check-double me-2"></i>CONCLUIR E FINALIZAR COTAÇÃO
+                </button>
+            </div>
+        </div>
+    </div>
 </div>

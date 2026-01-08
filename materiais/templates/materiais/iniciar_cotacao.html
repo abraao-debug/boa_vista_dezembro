@@ -1,101 +1,336 @@
 {% extends 'materiais/base.html' %}
-{% block title %}Registrar Cotação{% endblock %}
+
+{% block title %}Registrar Resposta da Cotação{% endblock %}
 
 {% block content %}
+
 <div class="d-flex align-items-center mb-3">
-    <a href="{% url 'materiais:gerenciar_cotacoes' %}?tab=aguardando" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
+    <a href="{% url 'materiais:gerenciar_cotacoes' %}" class="btn btn-secondary me-3">
+        <i class="fas fa-arrow-left"></i> Voltar
+    </a>
     <div>
-        <h4 class="mb-0">Registrar Resposta da Cotação - SC {{ solicitacao.numero }}</h4>
-        <p class="text-muted mb-0">Preencha os preços e condições recebidos do fornecedor.</p>
+        <h4 class="mb-0">Registrar Resposta Manual</h4>
+        <p class="text-muted mb-0">Fornecedor: <strong>{{ fornecedor_selecionado.nome_fantasia }}</strong> | SC: {{ solicitacao.numero }}</p>
     </div>
 </div>
+
 <hr class="mb-4">
 
-<form method="post">
+<form method="POST" id="formIniciarCotacao" onsubmit="return validarConfirmacaoFinal()">
     {% csrf_token %}
-    <div class="card">
-        <div class="card-body">
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Fornecedor</label>
-                    <input type="hidden" name="fornecedor" value="{{ fornecedor_selecionado.id }}">
-                    <input type="text" class="form-control" value="{{ fornecedor_selecionado.nome_fantasia }}" disabled readonly>
-                </div>
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Forma de Pagamento (Sugerida)</label>
-                    <input type="text" class="form-control" value="{{ envio_cotacao.get_forma_pagamento_display }}" disabled readonly>
-                </div>
-            </div>
-            <div class="row">
-                <div class="col-md-4 mb-3">
-                     <label for="prazo_entrega" class="form-label">Prazo de Entrega</label>
-                     <input type="text" name="prazo_entrega" id="prazo_entrega" class="form-control" placeholder="Ex: 5 dias úteis">
-                </div>
-                <div class="col-md-4 mb-3">
-                     <label for="condicao_pagamento" class="form-label">Condição de Pagamento (Resposta)</label>
-                     <input type="text" name="condicao_pagamento" id="condicao_pagamento" class="form-control" placeholder="Ex: 30 dias">
-                </div>
-                <div class="col-md-4 mb-3">
-                    <label for="valor_frete" class="form-label">Valor do Frete (se houver)</label>
-                    <div class="input-group">
-                        <span class="input-group-text">R$</span>
-                        <input type="text" class="form-control price-input" name="valor_frete" id="valor_frete" placeholder="0,00">
-                    </div>
-                </div>
-            </div>
-             <div class="mb-3">
-                <label for="endereco_entrega" class="form-label">Endereço de Entrega</label>
-                <select name="endereco_entrega" id="endereco_entrega" class="form-select">
-                    <option value="">Endereço da Obra ({{ solicitacao.obra.nome }})</option>
-                    {% for destino in destinos_entrega %}
-                        <option value="{{ destino.id }}">{{ destino.nome }}</option>
+
+    <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-dark text-white">
+            <h6 class="mb-0 small text-uppercase">Itens para Registro de Preço</h6>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr style="font-size: 0.8rem;">
+                        <th>DESCRIÇÃO DO MATERIAL</th>
+                        <th class="text-center">QUANTIDADE</th>
+                        <th class="text-end" style="width: 200px;">PREÇO UNITÁRIO (R$)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in itens_para_cotar %}
+                    <tr>
+                        <td class="text-dark">
+                            <div style="font-weight: 400;">{{ item.descricao }}</div>
+                            <small class="text-muted">{{ item.observacoes|default:"" }}</small>
+                        </td>
+                        <td class="text-center">
+                            <span class="badge bg-light text-dark border fw-normal">{{ item.quantidade|floatformat:0 }} {{ item.unidade }}</span>
+                        </td>
+                        <td class="text-end">
+                            <input type="text" name="preco_{{ item.id }}" class="form-control form-control-sm text-end mask-money" required placeholder="0,00">
+                        </td>
+                    </tr>
                     {% endfor %}
-                </select>
-            </div>
-            <div class="mb-3">
-                <label for="observacoes" class="form-label">Observações Gerais da Cotação</label>
-                <textarea name="observacoes" id="observacoes" class="form-control" rows="2" placeholder="Ex: Material similar, etc."></textarea>
-            </div>
-            <hr>
-            <h6>Informe os preços para este fornecedor:</h6>
-            <p class="text-muted small">Preencha apenas os campos dos itens para os quais o fornecedor enviou um preço.</p>
-            
-            {% for item in itens_para_cotar %}
-            <div class="p-3 border rounded mb-2 bg-light">
-                <div class="row align-items-center">
-                    <div class="col-md-7">
-                        <label class="form-check-label">
-                            <strong>{{ item.descricao }}</strong>
-                            <small class="d-block text-muted">{{ item.quantidade|floatformat:2 }} {{ item.unidade }}</small>
-                        </label>
-                    </div>
-                    <div class="col-md-5">
-                        <div class="input-group">
-                            <span class="input-group-text">R$</span>
-                            <input type="text" class="form-control price-input" name="preco_{{ item.id }}" placeholder="0,00" autocomplete="off">
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-7">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-header bg-dark text-white fw-bold">
+                    <i class="fas fa-handshake me-2"></i> CONDIÇÕES NEGOCIADAS (OBRIGATÓRIO)
+                </div>
+                <div class="card-body bg-light">
+                    <div class="mb-4 p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small d-block mb-2 text-uppercase">1. Prazo de Entrega Acordado</label>
+                        <div class="alert alert-info py-2 mb-3" style="font-size: 0.85rem;">
+                            <i class="fas fa-calendar-alt me-2"></i> Necessário para: <strong id="prazo_original">{{ solicitacao.data_necessidade|date:"d/m/Y" }}</strong>
+                        </div>
+                        <div class="btn-group w-100 mb-3" role="group">
+                            <input type="radio" class="btn-check" name="aceita_prazo" id="prazo_sim" value="sim" required onclick="gerenciarDivergenciaManual('prazo', false)">
+                            <label class="btn btn-outline-success btn-sm" for="prazo_sim"><i class="fas fa-check me-1"></i> ATENDE O PRAZO</label>
+                            <input type="radio" class="btn-check" name="aceita_prazo" id="prazo_nao" value="nao" onclick="gerenciarDivergenciaManual('prazo', true)">
+                            <label class="btn btn-outline-danger btn-sm" for="prazo_nao"><i class="fas fa-edit me-1"></i> NOVA DATA</label>
+                        </div>
+                        <div id="box_prazo_manual" style="display:none;" class="p-3 border-start border-danger border-4 bg-light rounded shadow-sm">
+                            <label class="small fw-bold text-danger mb-1 text-uppercase">Motivo da Divergência:</label>
+                            <select name="motivo_divergencia_prazo" id="sel_motivo_prazo" class="form-select form-select-sm mb-3" onchange="verificarOutroManual(this, 'campo_outro_prazo')" required>
+                                <option value="">Selecione um motivo...</option>
+                                <option value="Aguardando reposição de estoque">Aguardando reposição de estoque</option>
+                                <option value="Logística/Rota semanal para a região">Logística/Rota semanal para a região</option>
+                                <option value="Outro">Outro motivo (especificar)</option>
+                            </select>
+                            <div id="campo_outro_prazo" class="mb-3" style="display:none;">
+                                <input type="text" name="outro_motivo_prazo" class="form-control form-control-sm" placeholder="Especifique o motivo">
+                            </div>
+                            <label class="small fw-bold text-danger mb-1 text-uppercase">Data Real de Entrega:</label>
+                            <input type="date" name="prazo_entrega_data" id="input_prazo_manual" class="form-control form-control-sm">
                         </div>
                     </div>
+
+                    <div class="mb-4 p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small d-block mb-2 text-uppercase">2. Condição de Pagamento</label>
+                        <div class="alert alert-info py-2 mb-3" style="font-size: 0.85rem;">
+                            <i class="fas fa-wallet me-2"></i> Solicitado:
+                            <strong id="pgto_original">{% if envio_cotacao %}{{ envio_cotacao.get_forma_pagamento_display }} / {{ envio_cotacao.prazo_pagamento }} dias{% else %}Padronizado{% endif %}</strong>
+                        </div>
+                        <div class="btn-group w-100 mb-3" role="group">
+                            <input type="radio" class="btn-check" name="aceita_pagamento" id="pgto_sim" value="sim" required onclick="gerenciarDivergenciaManual('pgto', false)">
+                            <label class="btn btn-outline-success btn-sm" for="pgto_sim"><i class="fas fa-check me-1"></i> ACEITO CONDIÇÃO</label>
+                            <input type="radio" class="btn-check" name="aceita_pagamento" id="pgto_nao" value="nao" onclick="gerenciarDivergenciaManual('pgto', true)">
+                            <label class="btn btn-outline-danger btn-sm" for="pgto_nao"><i class="fas fa-exchange-alt me-1"></i> AJUSTAR</label>
+                        </div>
+                        <div id="box_pgto_manual" style="display:none;" class="p-3 border-start border-danger border-4 bg-light rounded shadow-sm">
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-7">
+                                    <label class="small fw-bold text-danger mb-1">FORMA:</label>
+                                    <select name="nova_forma_pagamento" id="sel_nova_forma" class="form-select form-select-sm" required>
+                                        <option value="avista">À Vista</option>
+                                        <option value="pix">Pix</option>
+                                        <option value="boleto" selected>Boleto Bancário</option>
+                                        <option value="cartao_credito">Cartão de Crédito</option>
+                                        <option value="cartao_debito">Cartão de Débito</option>
+                                        <option value="transferencia">Transferência Bancária</option>
+                                        <option value="a_negociar">A Negociar</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-5">
+                                    <label class="small fw-bold text-danger mb-1">DIAS:</label>
+                                    <input type="number" name="novo_prazo_dias" id="input_novo_dias" class="form-control form-control-sm" placeholder="Ex: 28" required>
+                                </div>
+                            </div>
+                            <label class="small fw-bold text-danger mb-1">JUSTIFICATIVA COMERCIAL:</label>
+                            <select name="motivo_divergencia_pagamento" id="sel_motivo_pgto" class="form-select form-select-sm" onchange="verificarOutroManual(this, 'campo_outro_pgto')" required>
+                                <option value="">Selecione o motivo...</option>
+                                <option value="Norma interna para novos cadastros">Norma interna para novos cadastros</option>
+                                <option value="Limite de crédito insuficiente">Limite de crédito insuficiente</option>
+                                <option value="Outro">Outro motivo (especificar)</option>
+                            </select>
+                            <div id="campo_outro_pgto" class="mt-2" style="display:none;">
+                                <input type="text" name="outro_motivo_pagamento" class="form-control form-control-sm" placeholder="Especifique a justificativa">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-4 p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small d-block mb-2 text-uppercase">3. Local de Entrega</label>
+                        <div class="p-3 border rounded bg-light mb-3">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div>
+                                    <small class="text-muted d-block text-uppercase" style="font-size: 0.6rem; letter-spacing: 0.5px;">Obra de Destino:</small>
+                                    <strong id="destino_original_nome_display" class="d-block text-dark">
+                                        <i class="fas fa-map-marker-alt me-1 text-danger"></i>
+                                        {% if solicitacao.destino %}{{ solicitacao.destino.nome }}{% else %}{{ solicitacao.obra.nome }}{% endif %}
+                                    </strong>
+                                    <small class="text-muted d-block mt-1" style="font-size: 0.75rem;">
+                                        <i class="fas fa-location-dot me-1"></i>
+                                        Endereço: {% if solicitacao.destino %}{{ solicitacao.destino.endereco|default:"Endereço não cadastrado" }}{% else %}{{ solicitacao.obra.endereco|default:"Endereço não cadastrado" }}{% endif %}
+                                    </small>
+                                </div>
+                                <button type="button" class="btn btn-sm btn-outline-primary mt-1" onclick="toggleTrocaEndereco()" id="btnTrocarEndereco">
+                                    <i class="fas fa-exchange-alt me-1"></i> ALTERAR OBRA
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="box_troca_endereco" style="display:none;" class="p-3 border-start border-primary border-4 bg-white shadow-sm rounded">
+                            <label class="small fw-bold text-primary mb-1">SELECIONAR OUTRA OBRA:</label>
+                            <select name="endereco_entrega" id="id_endereco_entrega" class="form-select form-select-sm" onchange="alertaMudancaEndereco(this)">
+                                {% for obra_dest in obras_entrega %}
+                                <option value="{{ obra_dest.id }}" data-endereco="{{ obra_dest.endereco|default:'' }}" data-nome="{{ obra_dest.nome }}" 
+                                    {% if solicitacao.destino and solicitacao.destino.id == obra_dest.id %}selected{% elif not solicitacao.destino and solicitacao.obra.id == obra_dest.id %}selected{% endif %}>
+                                    {{ obra_dest.nome }}{% if obra_dest.endereco %} - {{ obra_dest.endereco }}{% endif %}
+                                </option>
+                                {% endfor %}
+                            </select>
+                            <div id="info_novo_endereco" class="mt-2 small text-primary fw-bold" style="display:none;"></div>
+                            <button type="button" class="btn btn-sm btn-link text-muted mt-2 p-0" onclick="toggleTrocaEndereco()">
+                                <i class="fas fa-times me-1"></i> Cancelar alteração
+                            </button>
+                        </div>
+                        <input type="hidden" id="destino_original_id" value="{% if solicitacao.destino %}{{ solicitacao.destino.id }}{% else %}{{ solicitacao.obra.id }}{% endif %}">
+                        <input type="hidden" id="destino_original_nome_value" value="{% if solicitacao.destino %}{{ solicitacao.destino.nome }}{% else %}{{ solicitacao.obra.nome }}{% endif %}">
+                    </div>
+
+                    <div class="p-3 border rounded bg-white shadow-sm">
+                        <label class="form-label fw-bold text-primary small mb-1">VALOR DO FRETE (R$)</label>
+                        <input type="text" name="valor_frete" class="form-control mask-money mb-3" value="0,00" required>
+                        <label class="form-label fw-bold text-primary small mb-1">OBSERVAÇÕES DA NEGOCIAÇÃO</label>
+                        <textarea name="observacoes" class="form-control form-control-sm" rows="2" placeholder="Notas sobre a negociação..."></textarea>
+                    </div>
                 </div>
             </div>
-            {% endfor %}
         </div>
-<div class="card-footer text-end">
-     <a href="{% url 'materiais:gerenciar_cotacoes' %}?tab=aguardando" class="btn btn-secondary">Cancelar</a>
-     <button type="submit" class="btn btn-success"><i class="fas fa-check"></i> Registrar Cotação</button>
-</div>
+
+        <div class="col-md-5">
+            <div class="alert alert-warning shadow-sm border-0 mb-3">
+                <h6 class="fw-bold small"><i class="fas fa-exclamation-triangle me-2"></i>Atenção Almoxarife</h6>
+                <p class="small mb-0">Você está a registar preços recebidos fora do portal. Garanta que os motivos de divergência reflitam a negociação real.</p>
+            </div>
+
+            <div class="alert alert-info shadow-sm border-0 mb-3">
+                <h6 class="fw-bold small"><i class="fas fa-info-circle me-2"></i>Instruções de Registro</h6>
+                <ul class="small mb-0 ps-3">
+                    <li>Preencha o preço unitário para todos os itens selecionados.</li>
+                    <li>Qualquer alteração de prazo ou pagamento deve ser justificada.</li>
+                    <li>Este registo alimenta os dados comerciais da futura RM.</li>
+                </ul>
+            </div>
+
+            <div class="card shadow-sm border-0">
+                <div class="card-body p-4 text-center">
+                    <button type="submit" class="btn btn-success w-100 py-3 fw-bold shadow-lg">
+                        <i class="fas fa-save me-2"></i>SALVAR REGISTRO
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 </form>
 
+<div class="modal fade" id="modalConfirmarDivergencia" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow-lg border-0">
+            <div class="modal-header bg-warning text-dark">
+                <h5 class="modal-title fw-bold"><i class="fas fa-exclamation-triangle me-2"></i> Atenção: Divergências Detectadas</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-4">
+                <p class="text-muted mb-3">Identificamos mudanças em relação à solicitação original. Verifique os pontos abaixo:</p>
+                <div id="listaDivergencias" class="bg-light p-3 rounded border shadow-sm"></div>
+                <p class="mt-3 mb-0 fw-bold text-center">Deseja confirmar estas alterações e salvar o registo?</p>
+            </div>
+            <div class="modal-footer border-0 bg-light d-flex justify-content-center">
+                <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">Revisar</button>
+                <button type="button" class="btn btn-warning px-4 fw-bold" id="btnConfirmarDivergenciaFinal">Confirmar e Salvar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block javascript %}
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    document.querySelectorAll('.price-input').forEach(input => {
-        input.addEventListener('input', function(e) {
-            let value = e.target.value.replace(/\D/g, '');
-            if (value === '') return;
-            value = (parseInt(value, 10) / 100).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            e.target.value = value;
-        });
+    $(document).ready(function() {
+        $('.mask-money').mask('000.000.000.000.000,00', { reverse: true });
+        
+        // Inicializa o select de endereço com o valor correto
+        const destinoOriginalId = document.getElementById('destino_original_id').value;
+        const selectEndereco = document.getElementById('id_endereco_entrega');
+        if (destinoOriginalId && selectEndereco) {
+            selectEndereco.value = destinoOriginalId;
+        }
     });
-});
+
+    let divergenciaAceita = false;
+
+    function gerenciarDivergenciaManual(tipo, divergiu) {
+        const box = document.getElementById('box_' + tipo + '_manual');
+        const inputs = box.querySelectorAll('input, select');
+        if (divergiu) {
+            box.style.display = 'block';
+            inputs.forEach(el => { if (!el.parentNode.id?.includes('outro')) el.required = true; });
+        } else {
+            box.style.display = 'none';
+            inputs.forEach(el => el.required = false);
+        }
+    }
+
+    function verificarOutroManual(selectElement, campoId) {
+        const campoExtra = document.getElementById(campoId);
+        if (selectElement.value === 'Outro') {
+            campoExtra.style.display = 'block';
+            campoExtra.querySelector('input').required = true;
+        } else {
+            campoExtra.style.display = 'none';
+            campoExtra.querySelector('input').required = false;
+        }
+    }
+
+    function toggleTrocaEndereco() {
+        const box = document.getElementById('box_troca_endereco');
+        const btn = document.getElementById('btnTrocarEndereco');
+        if (box.style.display === 'none') {
+            box.style.display = 'block';
+            btn.classList.replace('btn-outline-primary', 'btn-secondary');
+            btn.innerHTML = '<i class="fas fa-undo me-1"></i> MANTER ORIGINAL';
+        } else {
+            box.style.display = 'none';
+            btn.classList.replace('btn-secondary', 'btn-outline-primary');
+            btn.innerHTML = '<i class="fas fa-exchange-alt me-1"></i> TROCAR ENDEREÇO';
+            const originalId = document.getElementById('destino_original_id').value;
+            document.getElementById('id_endereco_entrega').value = originalId;
+            document.getElementById('info_novo_endereco').style.display = 'none';
+        }
+    }
+
+    function alertaMudancaEndereco(select) {
+        const originalId = String(document.getElementById('destino_original_id').value).trim();
+        const infoDiv = document.getElementById('info_novo_endereco');
+        const selectedOption = select.options[select.selectedIndex];
+        const enderecoDestino = selectedOption.getAttribute('data-endereco');
+        const nomeDestino = selectedOption.getAttribute('data-nome');
+        if (document.getElementById('box_troca_endereco').style.display !== 'none' && String(select.value).trim() !== originalId) {
+            infoDiv.style.display = 'block';
+            infoDiv.innerHTML = `<i class="fas fa-exclamation-triangle me-2"></i><strong>Novo local de entrega:</strong><br>${nomeDestino}<br><small>${enderecoDestino || 'Endereço não informado'}</small>`;
+        } else {
+            infoDiv.style.display = 'none';
+        }
+    }
+
+    function validarConfirmacaoFinal() {
+        if (divergenciaAceita) return true;
+        let html = "";
+        const boxTroca = document.getElementById('box_troca_endereco');
+        const selectEnd = document.getElementById('id_endereco_entrega');
+        const originalId = String(document.getElementById('destino_original_id').value).trim();
+        const originalNome = String(document.getElementById('destino_original_nome_value').value).trim();
+        const currentId = String(selectEnd.value).trim();
+        if (boxTroca.style.display !== 'none' && currentId !== originalId) {
+            html += `<div class="mb-2 small text-danger"><b>Local:</b> de "${originalNome}" para "${selectEnd.options[selectEnd.selectedIndex].text}"</div>`;
+        }
+        if (document.getElementById('prazo_nao').checked) {
+            const nova = document.getElementById('input_prazo_manual').value.split('-').reverse().join('/');
+            html += `<div class="mb-2 small text-danger"><b>Prazo:</b> de ${document.getElementById('prazo_original').innerText.trim()} para ${nova || 'Não definida'}</div>`;
+        }
+        if (document.getElementById('pgto_nao').checked) {
+            const pgtoOriginal = document.getElementById('pgto_original').innerText.trim();
+            const formaNova = document.getElementById('sel_nova_forma').options[document.getElementById('sel_nova_forma').selectedIndex].text;
+            const diasNovos = document.getElementById('input_novo_dias').value;
+            html += `<div class="mb-0 small text-danger"><b>Pagamento:</b> de "${pgtoOriginal}" para "${formaNova} / ${diasNovos} dias"</div>`;
+        }
+        if (html !== "") {
+            document.getElementById('listaDivergencias').innerHTML = html;
+            var myModal = new bootstrap.Modal(document.getElementById('modalConfirmarDivergencia'));
+            myModal.show();
+            return false;
+        }
+        return true;
+    }
+
+    document.getElementById('btnConfirmarDivergenciaFinal').addEventListener('click', function() {
+        divergenciaAceita = true;
+        document.getElementById('formIniciarCotacao').submit();
+    });
 </script>
+
 {% endblock %}

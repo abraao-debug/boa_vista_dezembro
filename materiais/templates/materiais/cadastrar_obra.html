@@ -1,0 +1,163 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Cadastrar Obra{% endblock %}
+
+{% block content %}
+<style>
+    {% include 'materiais/styles_dashboard.css' %}
+    .destino-item { border-left: 3px solid #0d6efd; background-color: #f8f9fa; transition: all 0.2s; }
+    .destino-item:hover { background-color: #e9ecef; }
+    .destino-padrao { border-left-color: #198754; background-color: #d1e7dd; }
+</style>
+
+<form method="POST" id="formObra">
+    {% csrf_token %}
+    
+    <div class="d-flex align-items-center mb-3">
+        <a href="{% url 'materiais:lista_obras' %}" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
+        <div>
+            <h4 class="mb-0">Cadastrar Nova Obra</h4>
+            <p class="text-muted mb-0 small">Preencha as informações da obra e adicione locais de entrega</p>
+        </div>
+    </div>
+    <hr class="mb-4">
+
+    <div class="row">
+        <div class="col-lg-6 mb-4">
+            <div class="card h-100">
+                <div class="card-header bg-primary text-white">
+                    <h6 class="mb-0"><i class="fas fa-building me-2"></i>Dados da Obra</h6>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="nome" class="form-label">Nome da Obra *</label>
+                        <input type="text" class="form-control" id="nome" name="nome" required placeholder="Ex: Edifício Residencial Boa Vista">
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="endereco" class="form-label">Endereço Completo</label>
+                        <textarea class="form-control" id="endereco" name="endereco" rows="2" placeholder="Rua, número, bairro, cidade - UF"></textarea>
+                        <div class="form-text">
+                            <i class="fas fa-info-circle me-1"></i>Este será o endereço padrão para entrega de materiais
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="data_inicio" class="form-label">Data de Início</label>
+                            <input type="date" class="form-control" id="data_inicio" name="data_inicio">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="data_fim" class="form-label">Previsão de Término</label>
+                            <input type="date" class="form-control" id="data_fim" name="data_fim">
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-success py-2 px-3">
+                        <i class="fas fa-check-circle me-2"></i>
+                        <strong>Destino Padrão Automático:</strong> A própria obra será criada como destino de entrega principal
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6 mb-4">
+            <div class="card h-100">
+                <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0"><i class="fas fa-map-marked-alt me-2"></i>Destinos Adicionais</h6>
+                    <button type="button" class="btn btn-sm btn-light" id="btnAddDestino">
+                        <i class="fas fa-plus me-1"></i>Adicionar Local
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info py-2 px-3 mb-3" style="font-size: 0.85rem;">
+                        <i class="fas fa-lightbulb me-1"></i>
+                        <strong>Adicione locais específicos</strong> como almoxarifado, canteiro de obras, depósito, etc.
+                    </div>
+                    
+                    <div id="destinosContainer">
+                        <!-- Destinos adicionados via JavaScript aparecerão aqui -->
+                    </div>
+                    
+                    <div id="emptyState" class="text-center p-4 text-muted">
+                        <i class="fas fa-warehouse fa-2x mb-2 opacity-50"></i>
+                        <p class="small mb-0">Nenhum destino adicional cadastrado</p>
+                        <small>Clique em "Adicionar Local" para criar destinos específicos</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="text-end mt-2">
+        <a href="{% url 'materiais:lista_obras' %}" class="btn btn-light border">Cancelar</a>
+        <button type="submit" class="btn btn-success px-4">
+            <i class="fas fa-save me-2"></i>Cadastrar Obra
+        </button>
+    </div>
+</form>
+
+{% endblock %}
+
+{% block javascript %}
+<script>
+$(document).ready(function() {
+    let destinoIndex = 0;
+    
+    function updateEmptyState() {
+        const container = $('#destinosContainer');
+        const emptyState = $('#emptyState');
+        
+        if (container.children().length === 0) {
+            emptyState.show();
+        } else {
+            emptyState.hide();
+        }
+    }
+    
+    $('#btnAddDestino').click(function() {
+        destinoIndex++;
+        const html = `
+            <div class="destino-item p-3 rounded mb-2 position-relative" data-index="${destinoIndex}">
+                <button type="button" class="btn btn-sm btn-danger position-absolute top-0 end-0 m-2 btn-remove-destino">
+                    <i class="fas fa-times"></i>
+                </button>
+                <div class="mb-2">
+                    <label class="form-label small fw-bold text-primary">Nome do Local *</label>
+                    <input type="text" class="form-control form-control-sm" name="destino_nome[]" 
+                           placeholder="Ex: Almoxarifado Central, Canteiro Bloco A" required>
+                </div>
+                <div>
+                    <label class="form-label small fw-bold text-primary">Endereço (Opcional)</label>
+                    <input type="text" class="form-control form-control-sm" name="destino_endereco[]" 
+                           placeholder="Deixe vazio se for o mesmo da obra">
+                    <small class="text-muted">Se deixar vazio, usará o endereço da obra</small>
+                </div>
+            </div>
+        `;
+        
+        $('#destinosContainer').append(html);
+        updateEmptyState();
+    });
+    
+    $(document).on('click', '.btn-remove-destino', function() {
+        $(this).closest('.destino-item').remove();
+        updateEmptyState();
+    });
+    
+    // Validação antes de submeter
+    $('#formObra').submit(function(e) {
+        const nome = $('#nome').val().trim();
+        
+        if (!nome) {
+            e.preventDefault();
+            alert('O nome da obra é obrigatório!');
+            return false;
+        }
+        
+        return true;
+    });
+    
+    updateEmptyState();
+});
+</script>
+{% endblock %}

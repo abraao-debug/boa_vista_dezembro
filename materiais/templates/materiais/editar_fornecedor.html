@@ -1,0 +1,170 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Editar Fornecedor - {{ fornecedor.nome_fantasia }}{% endblock %}
+
+{% block content %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div class="d-flex align-items-center">
+        <a href="{% url 'materiais:gerenciar_fornecedores' %}" class="btn btn-secondary me-3">
+            <i class="fas fa-arrow-left"></i> Voltar
+        </a>
+        <div>
+            <h4 class="mb-0">Editar Fornecedor</h4>
+            <p class="text-muted mb-0">Atualizando: <strong>{{ fornecedor.nome_fantasia }}</strong></p>
+        </div>
+    </div>
+</div>
+<hr class="mb-4">
+
+<div class="card shadow-sm border-0">
+    <div class="card-body p-4">
+        <form method="post" id="formEditarFornecedor">
+            {% csrf_token %}
+            
+            <h6 class="text-primary fw-bold mb-3"><i class="fas fa-building me-2"></i>DADOS DA EMPRESA</h6>
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label class="form-label fw-bold small text-muted">NOME FANTASIA *</label>
+                    <input type="text" class="form-control shadow-sm" name="nome_fantasia" value="{{ fornecedor.nome_fantasia }}" required>
+                </div>
+                <div class="col-md-5 mb-3">
+                    <label class="form-label fw-bold small text-muted">RAZÃO SOCIAL *</label>
+                    <input type="text" class="form-control shadow-sm" name="razao_social" value="{{ fornecedor.razao_social }}" required>
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label fw-bold small text-muted">CNPJ (Somente Leitura)</label>
+                    <input type="text" class="form-control shadow-sm bg-light" id="cnpj" value="{{ fornecedor.cnpj }}" readonly>
+                </div>
+            </div>
+
+            <div class="row align-items-end">
+                <div class="col-md-3 mb-3">
+                    <label class="form-label fw-bold small text-muted">TIPO *</label>
+                    <select class="form-select shadow-sm" name="tipo" required>
+                        <option value="material" {% if fornecedor.tipo == 'material' %}selected{% endif %}>Material</option>
+                        <option value="servico" {% if fornecedor.tipo == 'servico' %}selected{% endif %}>Serviço</option>
+                        <option value="ambos" {% if fornecedor.tipo == 'ambos' %}selected{% endif %}>Ambos</option>
+                    </select>
+                </div>
+                <div class="col-md-9 mb-3">
+                    <label class="form-label fw-bold small text-muted">CATEGORIAS DE FORNECIMENTO</label>
+                    <div class="input-group shadow-sm">
+                        <select class="form-select" id="categoria_select">
+                            <option value="">Pesquisar categorias...</option>
+                            {% for cat in categorias_principais %}
+                                <option value="{{ cat.id }}">{{ cat.nome }}</option>
+                            {% endfor %}
+                        </select>
+                        <button class="btn btn-primary" type="button" id="adicionar_produto_btn" disabled><i class="fas fa-plus"></i></button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="produtos_selecionados_container" class="border p-3 rounded bg-light mb-3 d-flex flex-wrap gap-2" style="min-height: 50px;">
+                </div>
+            <input type="hidden" name="produtos_fornecidos" id="produtos_fornecidos_hidden">
+
+            <h6 class="mt-4 text-primary fw-bold mb-3"><i class="fas fa-phone me-2"></i>CONTATO PRINCIPAL</h6>
+            <div class="row">
+                <div class="col-md-3 mb-3">
+                    <label class="form-label small fw-bold text-muted">E-MAIL</label>
+                    <input type="email" class="form-control shadow-sm" name="email" value="{{ fornecedor.email }}">
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label small fw-bold text-muted">NOME DO CONTATO</label>
+                    <input type="text" class="form-control shadow-sm" name="contato_nome" value="{{ fornecedor.contato_nome }}">
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label small fw-bold text-muted">TELEFONE FIXO</label>
+                    <input type="text" class="form-control shadow-sm" id="contato_telefone" name="contato_telefone" value="{{ fornecedor.contato_telefone }}">
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label small fw-bold text-muted">WHATSAPP / CELULAR</label>
+                    <input type="text" class="form-control shadow-sm" id="contato_whatsapp" name="contato_whatsapp" value="{{ fornecedor.contato_whatsapp }}">
+                </div>
+            </div>
+
+            <h6 class="mt-4 text-primary fw-bold mb-3"><i class="fas fa-map-marker-alt me-2"></i>LOCALIZAÇÃO</h6>
+            <div class="row">
+                <div class="col-md-2 mb-3">
+                    <label class="form-label small fw-bold text-muted">CEP</label>
+                    <input type="text" class="form-control shadow-sm" id="cep" name="cep" value="{{ fornecedor.cep }}">
+                </div>
+                <div class="col-md-5 mb-3">
+                    <label class="form-label small fw-bold text-muted">LOGRADOURO</label>
+                    <input type="text" class="form-control shadow-sm" name="logradouro" value="{{ fornecedor.logradouro }}">
+                </div>
+                <div class="col-md-2 mb-3">
+                    <label class="form-label small fw-bold text-muted">Nº</label>
+                    <input type="text" class="form-control shadow-sm" name="numero" value="{{ fornecedor.numero }}">
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label small fw-bold text-muted">BAIRRO</label>
+                    <input type="text" class="form-control shadow-sm" name="bairro" value="{{ fornecedor.bairro }}">
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-md-9 mb-3">
+                    <label class="form-label small fw-bold text-muted">CIDADE</label>
+                    <input type="text" class="form-control shadow-sm" name="cidade" value="{{ fornecedor.cidade }}">
+                </div>
+                <div class="col-md-3 mb-3">
+                    <label class="form-label small fw-bold text-muted">ESTADO (UF)</label>
+                    <input type="text" class="form-control shadow-sm" name="estado" value="{{ fornecedor.estado }}" maxlength="2">
+                </div>
+            </div>
+
+            <div class="mt-4">
+                <button type="submit" class="btn btn-primary px-5 shadow">
+                    <i class="fas fa-save me-2"></i>SALVAR ALTERAÇÕES
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block javascript %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.mask/1.14.16/jquery.mask.min.js"></script>
+<script>
+$(function() {
+    $('#contato_telefone').mask('(00) 0000-0000');
+    $('#contato_whatsapp').mask('(00) 00000-0000');
+    $('#cep').mask('00000-000');
+
+    let selecionados = JSON.parse('{{ categorias_selecionadas_json|safe }}');
+    renderizar();
+
+    $('#categoria_select').select2({ width: '100%' });
+    $('#categoria_select').on('change', function() { $('#adicionar_produto_btn').prop('disabled', !$(this).val()); });
+
+    $('#adicionar_produto_btn').click(function() {
+        const id = $('#categoria_select').val();
+        const nome = $('#categoria_select option:selected').text();
+        if (id && !selecionados.some(x => x.id == id)) {
+            selecionados.push({ id, nome });
+            renderizar();
+        }
+        $('#categoria_select').val('').trigger('change');
+    });
+
+    function renderizar() {
+        const container = $('#produtos_selecionados_container');
+        if (selecionados.length === 0) {
+            container.html('<span class="text-muted small">Nenhuma categoria selecionada.</span>');
+            return;
+        }
+        container.html(selecionados.map(i => `
+            <div class="badge bg-white text-dark border p-2 shadow-sm d-flex align-items-center">
+                ${i.nome} <i class="fas fa-times ms-2 text-danger" style="cursor:pointer" onclick="remover('${i.id}')"></i>
+            </div>
+        `).join(''));
+        $('#produtos_fornecidos_hidden').val(selecionados.map(x => x.id).join(','));
+    }
+
+    window.remover = (id) => { selecionados = selecionados.filter(x => x.id != id); renderizar(); };
+});
+</script>
+{% endblock %}

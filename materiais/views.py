@@ -3,6 +3,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_http_methods
 from django.http import JsonResponse
 from django.utils import timezone
 from django.db.models import Count, Q, Sum, F, DecimalField, Prefetch
@@ -17,10 +18,10 @@ from decimal import Decimal
 from . import rm_config
 import numpy as np
 from .models import (
-    User, SolicitacaoCompra, ItemSolicitacao, Fornecedor, ItemCatalogo, 
+    NotificacaoFornecedor, User, SolicitacaoCompra, ItemSolicitacao, Fornecedor, ItemCatalogo, 
     Obra, Cotacao, RequisicaoMaterial, HistoricoSolicitacao, 
     ItemCotacao, CategoriaSC, EnvioCotacao, CategoriaItem, Tag, UnidadeMedida, DestinoEntrega,
-    Recebimento, ItemRecebido # <-- NOVOS MODELOS PRESENTES
+    Recebimento, ItemRecebido, NotificacaoFornecedor # <-- NOVOS MODELOS PRESENTES
 )
 import json # Adicione esta importação no topo do seu arquivo views.py
 from django.db import transaction
@@ -31,7 +32,8 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from weasyprint import HTML
 from . import rm_config
-
+from django.core.mail import send_mail
+from django.conf import settings
 
 #solicitacao = SolicitacaoCompra.objects.create(...)cadastrar_itens
 def similaridade_texto(a, b):  
@@ -261,7 +263,6 @@ def nova_solicitacao(request):
     context = {
         'obras': obras,
         'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
-        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome'),
         'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
     }
     
@@ -357,165 +358,286 @@ def editar_solicitacao(request, solicitacao_id):
     
  
 
+from datetime import datetime
+
+
+from datetime import datetime
+from django.db import transaction
+from django.shortcuts import render, get_object_or_404, redirect
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.urls import reverse
+from .models import SolicitacaoCompra, Fornecedor, EnvioCotacao, Cotacao, ItemCotacao, HistoricoSolicitacao, Obra
+
 @login_required
 def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
     if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
         messages.error(request, 'Acesso negado.')
         return redirect('materiais:dashboard')
         
-    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+    solicitacao = get_object_or_404(SolicitacaoCompra.objects.select_related('obra', 'destino'), id=solicitacao_id)
     fornecedor_selecionado = get_object_or_404(Fornecedor, id=fornecedor_id)
     envio_original = EnvioCotacao.objects.filter(solicitacao=solicitacao, fornecedor=fornecedor_selecionado).first()
 
     if request.method == 'POST':
-        prazo_entrega = request.POST.get('prazo_entrega')
-        condicao_pagamento = request.POST.get('condicao_pagamento')
-        observacoes = request.POST.get('observacoes')
+        # --- 1. PROCESSAMENTO DE PRAZO ---
+        aceita_prazo = request.POST.get('aceita_prazo')
+        if aceita_prazo == 'sim':
+            prazo_final = "Atende"
+            motivo_prazo = "Dentro do prazo solicitado"
+        else:
+            data_raw = request.POST.get('prazo_entrega_data')
+            prazo_final = datetime.strptime(data_raw, '%Y-%m-%d').strftime('%d/%m/%Y') if data_raw else "Não informado"
+            motivo_prazo = request.POST.get('motivo_divergencia_prazo')
+            if motivo_prazo == "Outro":
+                motivo_prazo = request.POST.get('outro_motivo_prazo')
+
+        # --- 2. PROCESSAMENTO DE PAGAMENTO ---
+        aceita_pgto = request.POST.get('aceita_pagamento')
+        if aceita_pgto == 'sim':
+            pgto_final = "Atende"
+            motivo_pgto = "Conforme solicitado"
+        else:
+            forma_codigo = request.POST.get('nova_forma_pagamento', '')
+            dias = request.POST.get('novo_prazo_dias', '0')
+            
+            # Mapeamento de códigos para nomes formatados
+            formas_pagamento_dict = {
+                'avista': 'À Vista',
+                'pix': 'Pix',
+                'boleto': 'Boleto Bancário',
+                'cartao_credito': 'Cartão de Crédito',
+                'cartao_debito': 'Cartão de Débito',
+                'transferencia': 'Transferência Bancária',
+                'a_negociar': 'A Negociar',
+            }
+            
+            forma_nome = formas_pagamento_dict.get(forma_codigo, forma_codigo.upper())
+            pgto_final = f"{forma_nome} - {dias} dias"
+            motivo_pgto = request.POST.get('motivo_divergencia_pagamento')
+            if motivo_pgto == "Outro":
+                motivo_pgto = request.POST.get('outro_motivo_pagamento')
+
+        # --- 3. ENDEREÇO DE ENTREGA (CORREÇÃO DE CHAVE ESTRANGEIRA) ---
+        endereco_id_raw = request.POST.get('endereco_entrega')
+        if not endereco_id_raw or str(endereco_id_raw).strip() == "":
+            # Se não foi fornecido, usa destino se existir, senão usa a própria obra
+            endereco_id = solicitacao.destino_id if solicitacao.destino_id else solicitacao.obra_id
+        else:
+            try:
+                endereco_id = int(endereco_id_raw)
+            except (ValueError, TypeError):
+                endereco_id = solicitacao.destino_id if solicitacao.destino_id else solicitacao.obra_id
+
+        # --- 4. CÁLCULO DE CONFORMIDADE (SEMÁFORO) ---
+        conf = 'verde'
+        # Verifica se o endereço de entrega é diferente do solicitado
+        endereco_solicitado_id = solicitacao.destino_id if solicitacao.destino_id else solicitacao.obra_id
+        endereco_divergente = (endereco_id != endereco_solicitado_id)
+        
+        # VERMELHO: prazo divergente OU endereço divergente (urgência alta)
+        if aceita_prazo == 'nao' or endereco_divergente:
+            conf = 'vermelho'
+        # AMARELO: apenas pagamento divergente (comercial)
+        elif aceita_pgto == 'nao':
+            conf = 'amarelo'
+
         valor_frete_str = request.POST.get('valor_frete', '0').replace('.', '').replace(',', '.')
-        endereco_entrega_id = request.POST.get('endereco_entrega')
 
-        with transaction.atomic():
-            # --- INÍCIO DO AJUSTE DE AUDITORIA ---
-            nova_cotacao, created = Cotacao.objects.update_or_create(
-                solicitacao=solicitacao, 
-                fornecedor=fornecedor_selecionado, 
-                defaults={
-                    'prazo_entrega': prazo_entrega,
-                    'condicao_pagamento': condicao_pagamento, 
-                    'observacoes': observacoes,
-                    'valor_frete': float(valor_frete_str) if valor_frete_str else 0.0,
-                    'endereco_entrega_id': endereco_entrega_id if endereco_entrega_id else None,
-                    # NOVOS CAMPOS ABAIXO:
-                    'origem': 'manual',
-                    'registrado_por': request.user,
-                }
-            )
-            # --- FIM DO AJUSTE DE AUDITORIA ---
+        try:
+            with transaction.atomic():
+                nova_cotacao, created = Cotacao.objects.update_or_create(
+                    solicitacao=solicitacao, 
+                    fornecedor=fornecedor_selecionado, 
+                    defaults={
+                        'prazo_entrega': prazo_final,
+                        'condicao_pagamento': pgto_final, 
+                        'valor_frete': float(valor_frete_str) if valor_frete_str else 0.0,
+                        'endereco_entrega_id': endereco_id, 
+                        'conformidade': conf,
+                        'motivo_divergencia_prazo': motivo_prazo,
+                        'motivo_divergencia_pagamento': motivo_pgto,
+                        'observacoes': request.POST.get('observacoes'),
+                        'origem': 'manual',
+                        'registrado_por': request.user,
+                        'data_registro': datetime.now()
+                    }
+                )
 
-            nova_cotacao.itens_cotados.all().delete()
-            
-            itens_cotados_count = 0
-            for item_solicitado in envio_original.itens.all():
-                preco_str = request.POST.get(f'preco_{item_solicitado.id}')
-                if preco_str:
-                    preco_limpo = preco_str.replace('R$', '').strip().replace('.', '').replace(',', '.')
-                    try:
-                        preco_val = float(preco_limpo)
-                        if preco_val > 0:
-                            ItemCotacao.objects.create(cotacao=nova_cotacao, item_solicitacao=item_solicitado, preco=preco_val)
-                            itens_cotados_count += 1
-                    except (ValueError, TypeError): continue
-            
-            if itens_cotados_count == 0:
-                nova_cotacao.delete()
-                messages.error(request, "Nenhum preço válido foi informado. A cotação não foi registrada.")
-            else:
-                total_enviado = solicitacao.envios_cotacao.count()
-                total_recebido = solicitacao.cotacoes.count()
+                nova_cotacao.itens_cotados.all().delete()
+                itens_count = 0
+                base_itens = envio_original.itens.all() if envio_original else solicitacao.itens.all()
                 
-                historico_detalhes = f"Preços do fornecedor {fornecedor_selecionado.nome_fantasia} foram registrados manualmente por {request.user.username}."
-                if total_enviado > 0 and total_enviado == total_recebido:
-                    solicitacao.status = 'cotacao_selecionada'
+                for item_sol in base_itens:
+                    preco_raw = request.POST.get(f'preco_{item_sol.id}')
+                    if preco_raw:
+                        preco_limpo = preco_raw.replace('R$', '').strip().replace('.', '').replace(',', '.')
+                        ItemCotacao.objects.create(cotacao=nova_cotacao, item_solicitacao=item_sol, preco=float(preco_limpo))
+                        itens_count += 1
+                
+                if itens_count == 0:
+                    raise ValueError("Nenhum preço válido informado.")
+
+                if solicitacao.status in ['aprovada', 'aprovado_engenharia']:
+                    solicitacao.status = 'aguardando_resposta'
                     solicitacao.save()
-                    historico_detalhes += " Todas as cotações solicitadas foram recebidas. SC movida para análise."
-                
+
                 HistoricoSolicitacao.objects.create(
                     solicitacao=solicitacao, usuario=request.user, acao="Cotação Registrada",
-                    detalhes=historico_detalhes
+                    detalhes=f"Preços de {fornecedor_selecionado.nome_fantasia} registrados via escritório."
                 )
-                messages.success(request, f"Cotação para {fornecedor_selecionado.nome_fantasia} registrada com sucesso!")
+                
+                messages.success(request, "Cotação registrada com sucesso!")
                 return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
+
+        except Exception as e:
+            messages.error(request, f"Erro ao salvar: {str(e)}")
+            return redirect(request.path)
 
     context = {
         'solicitacao': solicitacao,
         'fornecedor_selecionado': fornecedor_selecionado,
         'envio_cotacao': envio_original,
-        'itens_para_cotar': envio_original.itens.all() if envio_original else [],
-        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome')
+        'itens_para_cotar': envio_original.itens.all() if envio_original else solicitacao.itens.all(),
+        'obras_entrega': Obra.objects.filter(ativa=True).order_by('nome')
     }
     return render(request, 'materiais/iniciar_cotacao.html', context)
 
 @login_required
 def selecionar_cotacao_vencedora(request, cotacao_id):
+    """
+    Finaliza o processo de cotação: seleciona a vencedora, gera a RM,
+    notifica o fornecedor (Portal e E-mail) e registra a justificativa de aprovação.
+    Ajuste: Implementada limpeza em cascata para remover SC do portal dos perdedores.
+    """
+    # 1. Verificação de permissão
     if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
         messages.error(request, 'Acesso negado.')
         return redirect('materiais:dashboard')
         
     if request.method == 'POST':
-        cotacao_vencedora = get_object_or_404(Cotacao, id=cotacao_id)
+        cotacao_vencedora = get_object_or_404(Cotacao.objects.select_related('fornecedor', 'solicitacao__obra'), id=cotacao_id)
         solicitacao = cotacao_vencedora.solicitacao
+        
+        # --- BLINDAGEM: Captura a justificativa enviada pelo modal ---
+        justificativa = request.POST.get('justificativa_diretoria', '')
 
-        # --- INÍCIO DA CORREÇÃO DE SEGURANÇA ---
-        # ANTES de fazer qualquer coisa, verifica se uma RM já não foi criada para esta SC.
-        # O 'hasattr(solicitacao, 'requisicao')' checa se a relação OneToOne já existe.
+        # --- SEGURANÇA: Evita criação de RMs duplicadas ---
         if hasattr(solicitacao, 'requisicao'):
-            messages.warning(request, f'A Requisição de Material para a SC {solicitacao.numero} já foi gerada anteriormente.')
+            messages.warning(request, f'A RM para a SC {solicitacao.numero} já foi gerada anteriormente.')
             return redirect('materiais:gerenciar_requisicoes')
-        # --- FIM DA CORREÇÃO DE SEGURANÇA ---
 
-        with transaction.atomic():
-            # Apaga as outras cotações e envios que não foram vencedores
-            solicitacao.cotacoes.exclude(pk=cotacao_vencedora.pk).delete()
-            solicitacao.envios_cotacao.all().delete()
+        try:
+            with transaction.atomic():
+                # 2. LIMPEZA EM CASCATA: Remove outras cotações e envios (convites) desta SC
+                # Isso faz a SC sumir do portal de todos os fornecedores que não venceram
+                solicitacao.cotacoes.exclude(pk=cotacao_vencedora.pk).delete()
+                solicitacao.envios_cotacao.all().delete()
+                
+                # 3. Marca como vencedora
+                cotacao_vencedora.vencedora = True
+                cotacao_vencedora.save()
+
+                # 4. Criação da Requisição de Material (RM)
+                nova_rm = RequisicaoMaterial.objects.create(
+                    solicitacao_origem=solicitacao,
+                    cotacao_vencedora=cotacao_vencedora,
+                    valor_total=cotacao_vencedora.valor_total,
+                    status_assinatura='pendente' 
+                )
+
+                # 5. Atualiza status da Solicitação
+                solicitacao.status = 'finalizada'
+                solicitacao.save()
+                
+                # 6. Registro de Auditoria no Histórico
+                detalhes_hist = f"Cotação de {cotacao_vencedora.fornecedor.nome_fantasia} selecionada. RM {nova_rm.numero} gerada."
+                if justificativa:
+                    detalhes_hist += f" | JUSTIFICATIVA DE EXCEÇÃO: {justificativa}"
+
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao, 
+                    usuario=request.user, 
+                    acao="RM Gerada",
+                    detalhes=detalhes_hist
+                )
+
+                # 7. NOVA NOTIFICAÇÃO INTERNA (ALERTA NO PORTAL DO FORNECEDOR)
+                NotificacaoFornecedor.objects.create(
+                    fornecedor=cotacao_vencedora.fornecedor,
+                    titulo="Cotação Vencedora!",
+                    mensagem=f"Sua proposta para a SC {solicitacao.numero} foi selecionada. Obra: {solicitacao.obra.nome}.",
+                    link=reverse('materiais:lista_pedidos_fornecedor')
+                )
+
+                # 8. ENVIO AUTOMÁTICO DE E-MAIL AO FORNECEDOR
+                if cotacao_vencedora.fornecedor.email:
+                    assunto = f"Cotação Vencedora! - SC {solicitacao.numero}"
+                    corpo = f"Olá {cotacao_vencedora.fornecedor.nome_fantasia},\n\n" \
+                            f"Sua proposta para a Solicitação {solicitacao.numero} foi selecionada como vencedora!\n\n" \
+                            f"Detalhes:\n" \
+                            f"Obra: {solicitacao.obra.nome}\n" \
+                            f"Valor Total: R$ {cotacao_vencedora.valor_total}\n\n" \
+                            f"Em breve você receberá a Ordem de Compra oficial após as assinaturas de alçada."
+                    try:
+                        send_mail(assunto, corpo, settings.DEFAULT_FROM_EMAIL, [cotacao_vencedora.fornecedor.email])
+                    except Exception as e:
+                        print(f"Erro ao enviar e-mail: {e}")
+
+            messages.success(request, f"Cotação selecionada! RM {nova_rm.numero} gerada e fornecedor notificado.")
             
-            # Marca a cotação como vencedora
-            cotacao_vencedora.vencedora = True
-            cotacao_vencedora.save()
-
-            # Agora, cria a nova RM com segurança
-            nova_rm = RequisicaoMaterial.objects.create(
-                solicitacao_origem=solicitacao,
-                cotacao_vencedora=cotacao_vencedora,
-                valor_total=cotacao_vencedora.valor_total,
-                status_assinatura='pendente' 
-            )
-
-            # Atualiza o status da SC para finalizada
-            solicitacao.status = 'finalizada'
-            solicitacao.save()
-            
-            HistoricoSolicitacao.objects.create(
-                solicitacao=solicitacao, usuario=request.user, acao="RM Gerada",
-                detalhes=f"Cotação de {cotacao_vencedora.fornecedor.nome_fantasia} selecionada. RM {nova_rm.numero} criada."
-            )
-            messages.success(request, f"Cotação selecionada! RM {nova_rm.numero} foi gerada e está pendente de assinaturas.")
+        except Exception as e:
+            messages.error(request, f"Erro ao processar seleção: {e}")
+            return redirect('materiais:gerenciar_cotacoes')
     
     return redirect('materiais:gerenciar_requisicoes')
 
 @login_required
 def rejeitar_cotacao(request, cotacao_id):
+    """
+    Remove apenas o orçamento recebido (Cotacao), mantendo o convite (EnvioCotacao).
+    A SC volta para a aba 'Em Cotação' e o fornecedor pode cotar novamente.
+    """
     if request.method == 'POST':
         cotacao = get_object_or_404(Cotacao, id=cotacao_id)
-        solicitacao = cotacao.solicitacao # Capturamos a SC antes de apagar a cotação
-        fornecedor_nome = cotacao.fornecedor.nome_fantasia
+        solicitacao = cotacao.solicitacao
+        fornecedor = cotacao.fornecedor
+        fornecedor_nome = fornecedor.nome_fantasia
 
-        # Apaga a cotação
-        cotacao.delete()
+        try:
+            with transaction.atomic():
+                # CORREÇÃO: Apaga APENAS a Cotacao (preços), mantém o EnvioCotacao
+                cotacao.delete()
 
-        historico_detalhes = f"A cotação do fornecedor {fornecedor_nome} foi rejeitada e removida."
-        
-        # --- NOVA LÓGICA DE VERIFICAÇÃO DE STATUS ---
-        # Verifica se a SC ficou sem nenhuma outra cotação registrada
-        if not solicitacao.cotacoes.exists():
-            # Se não houver mais cotações, reverte o status para aguardar novas cotações
-            solicitacao.status = 'aguardando_resposta'
-            solicitacao.save()
-            historico_detalhes += " A SC retornou ao estado 'Aguardando Resposta' pois não há outras cotações."
+                historico_detalhes = f"Os preços do fornecedor {fornecedor_nome} foram removidos. O convite permanece ativo para nova cotação."
+                
+                # Verifica se a SC ficou sem nenhuma outra cotação registrada
+                if not solicitacao.cotacoes.exists():
+                    # Se não houver mais cotações, reverte o status para aguardar novas cotações
+                    # Isso faz a SC aparecer novamente em "Em Cotação"
+                    solicitacao.status = 'aguardando_resposta'
+                    solicitacao.save()
+                    historico_detalhes += " A SC retornou ao estado 'Em Cotação' aguardando novas respostas."
 
-        HistoricoSolicitacao.objects.create(
-            solicitacao=solicitacao,
-            usuario=request.user,
-            acao="Cotação Rejeitada",
-            detalhes=historico_detalhes
-        )
+                # Registro de Auditoria
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao,
+                    usuario=request.user,
+                    acao="Cotação Alterada",
+                    detalhes=historico_detalhes
+                )
 
-        messages.warning(request, f"A cotação do fornecedor {fornecedor_nome} foi rejeitada.")
-        
-        # Redireciona para a aba correta dependendo do que aconteceu
-        if solicitacao.status == 'aguardando_resposta':
-             return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=aguardando")
-        else:
-            return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
+            messages.success(request, f"Os preços do fornecedor {fornecedor_nome} foram removidos. O convite permanece ativo para nova cotação.")
+            
+            # Redireciona para a aba correta conforme lógica original
+            if solicitacao.status == 'aguardando_resposta':
+                return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=aguardando")
+            else:
+                return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
+
+        except Exception as e:
+            messages.error(request, f"Erro ao rejeitar cotação: {str(e)}")
+            return redirect('materiais:gerenciar_cotacoes')
 
     return redirect('materiais:gerenciar_cotacoes')
 
@@ -1038,6 +1160,11 @@ def api_solicitacao_itens(request, solicitacao_id):
     try:
         solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
         
+        # Busca todos os itens que já foram enviados para cotação
+        itens_ja_enviados = set()
+        for envio in solicitacao.envios_cotacao.all():
+            itens_ja_enviados.update(envio.itens.values_list('id', flat=True))
+        
         itens_data = []
         for item in solicitacao.itens.all():
             itens_data.append({
@@ -1045,7 +1172,8 @@ def api_solicitacao_itens(request, solicitacao_id):
                 'descricao': item.descricao,
                 'quantidade': float(item.quantidade),
                 'unidade': item.unidade,
-                'observacoes': item.observacoes or ''
+                'observacoes': item.observacoes or '',
+                'ja_enviado': item.id in itens_ja_enviados  # NOVO: flag para indicar se já foi enviado
             })
         
         return JsonResponse({
@@ -1061,6 +1189,45 @@ def api_solicitacao_itens(request, solicitacao_id):
     
     except Exception as e:
         return JsonResponse({'success': False, 'message': str(e)})
+
+@login_required
+def api_verificar_envios_anteriores(request, solicitacao_id):
+    """API para verificar se fornecedores já receberam cotação anterior desta SC"""
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        return JsonResponse({'success': False, 'message': 'Acesso negado'})
+    
+    try:
+        fornecedor_id = request.GET.get('fornecedor_id')
+        if not fornecedor_id:
+            return JsonResponse({'success': False, 'message': 'Fornecedor não especificado'})
+        
+        envio_anterior = EnvioCotacao.objects.filter(
+            solicitacao_id=solicitacao_id,
+            fornecedor_id=fornecedor_id
+        ).first()
+        
+        if envio_anterior:
+            return JsonResponse({
+                'success': True,
+                'tem_envio_anterior': True,
+                'condicoes': {
+                    'forma_pagamento': envio_anterior.forma_pagamento,
+                    'forma_pagamento_display': envio_anterior.get_forma_pagamento_display(),
+                    'prazo_pagamento': envio_anterior.prazo_pagamento,
+                    'prazo_resposta': envio_anterior.prazo_resposta.strftime('%d/%m/%Y') if envio_anterior.prazo_resposta else 'Não definido',
+                    'data_envio': envio_anterior.data_envio.strftime('%d/%m/%Y %H:%M'),
+                    'itens_enviados': list(envio_anterior.itens.values_list('id', flat=True))
+                }
+            })
+        else:
+            return JsonResponse({
+                'success': True,
+                'tem_envio_anterior': False
+            })
+    
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)})
+
 
 @login_required
 def aprovar_parcial(request, solicitacao_id):
@@ -1621,51 +1788,66 @@ def escritorio_editar_sc(request, solicitacao_id):
 # Substitua sua função gerenciar_cotacoes por esta
 @login_required
 def gerenciar_cotacoes(request):
-    """
-    View consolidada em 3 etapas com lógica de persistência:
-    1. Para Iniciar: SCs prontas para envio.
-    2. Em Cotação: SCs com fornecedores convidados que AINDA não responderam.
-    3. Cotação Recebida: SCs com pelo menos uma cotação para análise.
-    """
     if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
         messages.error(request, 'Acesso negado.')
         return redirect('materiais:dashboard')
 
     base_query = SolicitacaoCompra.objects.order_by('-is_emergencial', 'data_criacao')
-
-    # 1. ABA: PARA INICIAR
     scs_para_iniciar = base_query.filter(status__in=['aprovada', 'aprovado_engenharia'])
+    
+    # Adiciona informação de itens pendentes para cada SC
     for sc in scs_para_iniciar:
-        itens = sc.itens.all()
-        count_agregados = sum(1 for i in itens if i.item_catalogo and i.item_catalogo.categoria and i.item_catalogo.categoria.categoria_mae and i.item_catalogo.categoria.categoria_mae.nome.lower() == 'agregados')
-        sc.is_agregado = (itens.count() > 0 and count_agregados == itens.count())
-        sc.is_mista = (count_agregados > 0 and count_agregados < itens.count())
+        todos_itens = set(sc.itens.values_list('id', flat=True))
+        itens_enviados = set()
+        for envio in sc.envios_cotacao.all():
+            itens_enviados.update(envio.itens.values_list('id', flat=True))
+        
+        itens_pendentes_ids = todos_itens - itens_enviados
+        sc.itens_pendentes = sc.itens.filter(id__in=itens_pendentes_ids)
+        sc.tem_envios_parciais = bool(itens_enviados and itens_pendentes_ids)
+        sc.total_itens = len(todos_itens)
+        sc.itens_enviados_count = len(itens_enviados)
+    
+    # Busca automática das escolhas do Model para o Modal
+    formas_pagamento = EnvioCotacao.FORMAS_PAGAMENTO
 
-    # 3. ABA: COTAÇÃO RECEBIDA (SCs com pelo menos uma resposta registrada)
+    # Lógica de Abas (Preservada conforme original)
     scs_recebidas = base_query.filter(
-        Q(status='cotacao_selecionada') | 
-        Q(status='aguardando_resposta', cotacoes__isnull=False)
+        Q(status='cotacao_selecionada') | Q(status='aguardando_resposta', cotacoes__isnull=False)
     ).distinct().prefetch_related('cotacoes__fornecedor', 'envios_cotacao__fornecedor')
 
     for sc in scs_recebidas:
         sc.cotacoes_recebidas_ids = set(sc.cotacoes.values_list('fornecedor_id', flat=True))
 
-    # 2. ABA: EM COTAÇÃO (Filtro Robusto)
-    # Buscamos todas as SCs que estão no status de aguardo
+    # NOVA LÓGICA: Inclui SCs com status 'aguardando_resposta' OU que tenham envios mesmo estando 'aprovada'
     scs_em_cotacao_raw = base_query.filter(
-        status='aguardando_resposta'
-    ).prefetch_related('envios_cotacao__fornecedor', 'cotacoes')
-
+        Q(status='aguardando_resposta') | Q(status__in=['aprovada', 'aprovado_engenharia'], envios_cotacao__isnull=False)
+    ).distinct().prefetch_related('envios_cotacao__fornecedor', 'cotacoes')
+    
     scs_em_cotacao = []
     for sc in scs_em_cotacao_raw:
-        # Identificamos IDs de quem já respondeu
+        # Verifica se tem envios
+        if not sc.envios_cotacao.exists():
+            continue
+            
         respondidos = set(sc.cotacoes.values_list('fornecedor_id', flat=True))
-        # Identificamos IDs de quem foi convidado
         convidados = set(sc.envios_cotacao.values_list('fornecedor_id', flat=True))
         
-        # A SC permanece na ABA 2 enquanto houver pelo menos 1 convidado que NÃO respondeu
-        if any(f_id not in respondidos for f_id in convidados):
+        # Verifica se há itens pendentes
+        todos_itens_sc = set(sc.itens.values_list('id', flat=True))
+        itens_enviados_sc = set()
+        for envio in sc.envios_cotacao.all():
+            itens_enviados_sc.update(envio.itens.values_list('id', flat=True))
+        
+        itens_pendentes = todos_itens_sc - itens_enviados_sc
+        
+        # Se tem fornecedores aguardando resposta ou tem itens pendentes, adiciona
+        if any(f_id not in respondidos for f_id in convidados) or itens_pendentes:
             sc.cotacoes_recebidas_ids = respondidos
+            sc.tem_itens_pendentes = bool(itens_pendentes)
+            sc.itens_pendentes_count = len(itens_pendentes)
+            sc.total_itens = len(todos_itens_sc)
+            sc.itens_enviados_count = len(itens_enviados_sc)
             scs_em_cotacao.append(sc)
 
     context = {
@@ -1673,6 +1855,7 @@ def gerenciar_cotacoes(request):
         'scs_em_cotacao': scs_em_cotacao,
         'scs_recebidas': scs_recebidas,
         'aguardando_resposta_count': len(scs_em_cotacao),
+        'formas_pagamento': formas_pagamento, # Injeção automática
     }
     return render(request, 'materiais/gerenciar_cotacoes.html', context)
 
@@ -1734,7 +1917,7 @@ def editar_solicitacao_escritorio(request, solicitacao_id):
         'obras': Obra.objects.filter(ativa=True).order_by('nome'),
         'itens_catalogo_json': json.dumps(list(ItemCatalogo.objects.filter(ativo=True).values('id', 'codigo', 'descricao', 'unidade__sigla'))),
         'categorias_sc': CategoriaSC.objects.all().order_by('nome'),
-        'destinos_entrega': DestinoEntrega.objects.all().order_by('nome'), # NOVO
+        'destinos_entrega': Obra.objects.filter(ativa=True).order_by('nome'),
     }
     
     return render(request, 'materiais/editar_solicitacao.html', context)
@@ -1761,68 +1944,201 @@ def api_buscar_fornecedores(request):
 @login_required
 def enviar_cotacao_fornecedor(request, solicitacao_id):
     """
-    View unificada: Envia os dados para os fornecedores e move a SC 
-    diretamente do status 'Para Iniciar' para 'Em Cotação'.
+    Processa solicitações de cotação individualmente via AJAX.
+    Inclui suporte a timeout e fallback manual pelo frontend.
     """
     if request.method == 'POST' and request.user.perfil in ['almoxarife_escritorio', 'diretor']:
         solicitacao_original = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
         
-        fornecedores_ids = request.POST.getlist('fornecedor')
+        # Captura de dados enviados pelo FormData do AJAX
+        fornecedor_id = request.POST.get('fornecedor')
+        tipo_envio = request.POST.get('tipo_envio')  # 'auto' ou 'manual'
         itens_selecionados_ids = request.POST.getlist('itens_cotacao')
-        prazo_resposta = request.POST.get('prazo_resposta')
-        observacoes = request.POST.get('observacoes')
         
-        # --- CAPTURANDO NOVOS CAMPOS ---
+        # Dados de negociação e prazos
+        prazo_resposta = request.POST.get('prazo_resposta')
         forma_pagamento = request.POST.get('forma_pagamento')
         prazo_pagamento = request.POST.get('prazo_pagamento', 0)
+        observacoes = request.POST.get('observacoes')
 
-        if not all([fornecedores_ids, itens_selecionados_ids]):
-            messages.error(request, 'Selecione ao menos um fornecedor e um item.')
-            return redirect('materiais:gerenciar_cotacoes')
-
-        fornecedores_selecionados = Fornecedor.objects.filter(id__in=fornecedores_ids)
-        itens_selecionados = ItemSolicitacao.objects.filter(id__in=itens_selecionados_ids, solicitacao=solicitacao_original)
+        if not all([fornecedor_id, itens_selecionados_ids]):
+            return JsonResponse({'success': False, 'message': 'Fornecedor ou itens não selecionados.'}, status=400)
 
         try:
             with transaction.atomic():
-                # AJUSTE: Move a SC diretamente para o status de 'Em Cotação'
-                # No banco de dados o valor permanece 'aguardando_resposta' para manter compatibilidade
-                solicitacao_original.status = 'aguardando_resposta'
-                solicitacao_original.save()
+                fornecedor = get_object_or_404(Fornecedor, id=fornecedor_id)
                 
-                envios_criados_ids = []
-                for fornecedor in fornecedores_selecionados:
-                    # CRIAÇÃO DO ENVIO (Bloco onde estava o erro de sintaxe)
+                # VALIDAÇÃO CRÍTICA: Verifica se já existe envio anterior para este fornecedor
+                envio_anterior = EnvioCotacao.objects.filter(
+                    solicitacao=solicitacao_original,
+                    fornecedor=fornecedor
+                ).first()
+                
+                if envio_anterior:
+                    # Verifica se as condições comerciais são diferentes
+                    if (envio_anterior.forma_pagamento != forma_pagamento or 
+                        str(envio_anterior.prazo_pagamento) != str(prazo_pagamento)):
+                        return JsonResponse({
+                            'success': False,
+                            'message': f'❌ BLOQUEIO: Este fornecedor já recebeu cotação com condições diferentes!\n\n'
+                                     f'Condições anteriores:\n'
+                                     f'• Pagamento: {envio_anterior.get_forma_pagamento_display()}\n'
+                                     f'• Prazo: {envio_anterior.prazo_pagamento} dias\n\n'
+                                     f'Novas condições solicitadas:\n'
+                                     f'• Pagamento: {dict(EnvioCotacao.FORMAS_PAGAMENTO).get(forma_pagamento)}\n'
+                                     f'• Prazo: {prazo_pagamento} dias\n\n'
+                                     f'⚠️ Para evitar confusão, não é permitido enviar itens adicionais '
+                                     f'da mesma SC ao mesmo fornecedor com condições comerciais diferentes.\n\n'
+                                     f'Recomendação: Use as mesmas condições ou exclua o envio anterior.'
+                        }, status=400)
+                
+                # Se já existe envio com as MESMAS condições, apenas adiciona os novos itens
+                if envio_anterior:
+                    envio = envio_anterior
+                    # Adiciona os novos itens aos já existentes (usando .add() para M2M)
+                    novos_itens = ItemSolicitacao.objects.filter(id__in=itens_selecionados_ids)
+                    envio.itens.add(*novos_itens)
+                    # Atualiza observações se houver novas
+                    if observacoes and observacoes != envio.observacoes:
+                        envio.observacoes = f"{envio.observacoes}\n\n--- Atualização ---\n{observacoes}"
+                        envio.save()
+                else:
+                    # Criação do registro de envio (primeira vez para este fornecedor)
                     envio = EnvioCotacao.objects.create(
                         solicitacao=solicitacao_original, 
                         fornecedor=fornecedor,
                         forma_pagamento=forma_pagamento,
                         prazo_pagamento=prazo_pagamento,
                         prazo_resposta=prazo_resposta if prazo_resposta else None,
-                        observacoes=observacoes
+                        observacoes=observacoes,
+                        # Garante que o fornecedor saiba a data de necessidade da obra
+                        data_entrega_solicitada=solicitacao_original.data_necessidade 
                     )
-                    envio.itens.set(itens_selecionados)
-                    envios_criados_ids.append(envio.id)
+                    
+                    # Associa os itens específicos que o usuário marcou no modal
+                    envio.itens.set(ItemSolicitacao.objects.filter(id__in=itens_selecionados_ids))
+
+                # NOVA LÓGICA: Verifica se TODOS os itens da SC foram enviados para pelo menos 1 fornecedor
+                # Pega todos os itens da SC
+                todos_itens_sc = set(solicitacao_original.itens.values_list('id', flat=True))
+                # Pega todos os itens que já foram enviados (em todos os envios desta SC)
+                itens_enviados = set()
+                for e in solicitacao_original.envios_cotacao.all():
+                    itens_enviados.update(e.itens.values_list('id', flat=True))
                 
-                HistoricoSolicitacao.objects.create(
-                    solicitacao=solicitacao_original, 
-                    usuario=request.user, 
-                    acao="Cotação Enviada", 
-                    detalhes=f"Cotação enviada diretamente para {len(fornecedores_selecionados)} fornecedor(es). Status atualizado para Em Cotação."
+                # Só muda o status se TODOS os itens foram cobertos
+                if todos_itens_sc.issubset(itens_enviados):
+                    if solicitacao_original.status in ['aprovada', 'aprovado_engenharia']:
+                        solicitacao_original.status = 'aguardando_resposta'
+                        solicitacao_original.save()
+
+                # Notificação interna (Sininho do Portal do Fornecedor) - RESTAURADO
+                NotificacaoFornecedor.objects.create(
+                    fornecedor=fornecedor,
+                    titulo="Nova Cotação Disponível",
+                    mensagem=f"Solicitação {solicitacao_original.numero} - Obra: {solicitacao_original.obra.nome}",
+                    link=reverse('materiais:lista_cotacoes_fornecedor')
                 )
-            
-            # --- REDIRECIONAMENTO PARA CONFIRMAÇÃO ---
-            envios_ids_query_param = ",".join(map(str, envios_criados_ids))
-            redirect_url = f"{reverse('materiais:confirmar_envios_cotacao', args=[solicitacao_original.id])}?envios_ids={envios_ids_query_param}"
-            return redirect(redirect_url)
+
+                # CORREÇÃO: Envia e-mail em AMBOS os casos (auto e manual)
+                # A única diferença é que no manual também abre a tela de confirmação/texto
+                try:
+                    enviar_email_convite_automatico(fornecedor, solicitacao_original, envio)
+                except Exception as e:
+                    # Em caso de erro no e-mail, registra mas não impede o processo
+                    print(f"Aviso: E-mail não enviado para {fornecedor.nome_fantasia}: {e}")
+                    # Não levanta exceção para não bloquear o fluxo
+
+            # Resposta de sucesso para o modal de Etapa 2
+            return JsonResponse({
+                'success': True,
+                'message': 'Convite registrado com sucesso.',
+                # URL necessária para abrir a nova aba caso o tipo seja 'manual'
+                'url_confirmacao': reverse('materiais:confirmar_envios_cotacao', args=[solicitacao_original.id]) + f"?envios_ids={envio.id}"
+            })
 
         except Exception as e:
-            messages.error(request, f"Erro ao enviar cotação: {e}")
-            return redirect('materiais:gerenciar_cotacoes')
+            # Retorna erro para o frontend ativar o fallback manual (botão amarelo)
+            return JsonResponse({'success': False, 'message': str(e)}, status=500)
     
-    # Caso não seja POST ou perfil inválido
-    messages.error(request, 'Acesso negado ou método inválido.')
-    return redirect('materiais:gerenciar_cotacoes')
+    return JsonResponse({'success': False, 'message': 'Método não permitido ou acesso negado.'}, status=403)
+
+# FUNÇÃO AUXILIAR PARA O E-MAIL (Adicione no final do views.py ou antes da def acima)
+def enviar_email_convite_automatico(fornecedor, solicitacao, envio):
+    """
+    Tenta disparar o e-mail. Se falhar, apenas registra o erro sem interromper o fluxo.
+    Utilizado tanto para envio AUTO quanto MANUAL.
+    """
+    if not fornecedor.email:
+        print(f"Aviso: Fornecedor {fornecedor.nome_fantasia} não possui e-mail cadastrado.")
+        return False
+
+    assunto = f"Solicitação de Cotação - SC {solicitacao.numero} - {solicitacao.obra.nome}"
+    
+    # Mapeamento para visualização amigável
+    formas = dict([
+        ('a_negociar', 'A Negociar'), ('avista', 'À Vista'), 
+        ('pix', 'Pix'), ('boleto', 'Boleto Bancário'), 
+        ('cartao_credito', 'Cartão de Crédito')
+    ])
+    forma_label = formas.get(envio.forma_pagamento, 'A Negociar')
+
+    corpo = f"""
+    Prezado(a) {fornecedor.nome_fantasia},
+
+    Convidamos sua empresa a participar da cotação para a Solicitação de Compra nº {solicitacao.numero}.
+
+    DADOS DA SOLICITAÇÃO:
+    - Obra: {solicitacao.obra.nome}
+    - Prazo de Entrega Desejado: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}
+
+    CONDIÇÕES DE NEGOCIAÇÃO SUGERIDAS:
+    - Forma de Pagamento: {forma_label}
+    - Prazo de Pagamento: {envio.prazo_pagamento} dias
+    - Observações: {envio.observacoes or 'Nenhuma.'}
+
+    Por favor, acesse o nosso portal para registrar seus preços e prazos:
+    {settings.SITE_URL if hasattr(settings, 'SITE_URL') else 'Acesse nosso Portal'}
+
+    Atenciosamente,
+    Departamento de Compras
+    """
+
+    try:
+        # Envia o e-mail de fato
+        send_mail(
+            assunto,
+            corpo,
+            settings.DEFAULT_FROM_EMAIL,
+            [fornecedor.email],
+            fail_silently=False,
+        )
+        print(f"✓ E-mail enviado com sucesso para {fornecedor.nome_fantasia} ({fornecedor.email})")
+        return True
+    except Exception as e:
+        # Log do erro para o administrador, sem travar o usuário
+        print(f"✗ FALHA NO SMTP: Erro ao enviar e-mail para {fornecedor.email}: {e}")
+        # NÃO lança exceção - permite que o processo continue normalmente
+        return False
+
+
+def self_email_fornecedor(fornecedor, solicitacao):
+    """Função auxiliar para disparar o e-mail de convite."""
+    if fornecedor.email:
+        assunto = f"Solicitação de Cotação - {solicitacao.numero} - Construtora"
+        mensagem = f"""
+        Olá, {fornecedor.nome_fantasia}.
+        
+        Você recebeu um convite para cotar a Solicitação de Compra {solicitacao.numero}.
+        Obra: {solicitacao.obra.nome}
+        Prazo de entrega desejado: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}
+        
+        Por favor, acesse o nosso portal do fornecedor para registrar seus preços e condições.
+        """
+        try:
+            send_mail(assunto, mensagem, settings.DEFAULT_FROM_EMAIL, [fornecedor.email])
+        except Exception:
+            pass # Evita que erro de e-mail trave o sistema
 
 @login_required
 def gerar_email_cotacao(request, envio_id):
@@ -1885,51 +2201,87 @@ def confirmar_envio_manual(request, envio_id):
 @login_required
 def api_dados_confirmacao_rm(request, cotacao_id):
     """
-    Retorna detalhes da cotação com cálculos de subtotal e frete blindados contra erros,
-    além da lista exata de fornecedores pendentes para o alerta do modal.
+    Retorna detalhes da cotação blindados, incluindo o status de conformidade
+    para o controle de justificativa do modal.
     """
-    # select_related evita múltiplas consultas ao banco para buscar fornecedor e SC
     cotacao = get_object_or_404(
-        Cotacao.objects.select_related('fornecedor', 'solicitacao'), 
+        Cotacao.objects.select_related('fornecedor', 'solicitacao', 'endereco_entrega'), 
         id=cotacao_id
     )
     solicitacao = cotacao.solicitacao
     
-    # Lógica de Pendentes: Fornecedores convidados que ainda não possuem registro em 'cotacoes'
+    # Lógica de Pendentes
     convidados_ids = solicitacao.envios_cotacao.values_list('fornecedor_id', flat=True)
     responderam_ids = solicitacao.cotacoes.values_list('fornecedor_id', flat=True)
+    pendentes = Fornecedor.objects.filter(id__in=convidados_ids).exclude(id__in=responderam_ids).values_list('nome_fantasia', flat=True)
     
-    pendentes = Fornecedor.objects.filter(
-        id__in=convidados_ids
-    ).exclude(id__in=responderam_ids).values_list('nome_fantasia', flat=True)
-    
-    # Processamento de Itens com cálculo de subtotal explícito
+    # Processamento de Itens
     itens_lista = []
     for ic in cotacao.itens_cotados.select_related('item_solicitacao').all():
         qtd = ic.item_solicitacao.quantidade
         preco = ic.preco or 0
-        subtotal = qtd * preco
-        
         itens_lista.append({
             'descricao': ic.item_solicitacao.descricao,
-            'quantidade': f"{qtd:g}", # Formata removendo zeros (ex: 5.00 -> 5)
+            'quantidade': f"{qtd:g}",
             'unidade': ic.item_solicitacao.unidade,
             'preco_unitario': f"R$ {preco:.2f}".replace('.', ','),
-            'subtotal': f"R$ {subtotal:.2f}".replace('.', ',')
+            'subtotal': f"R$ {(qtd * preco):.2f}".replace('.', ',')
         })
 
-    # Construção do JSON garantindo chaves que o JS espera ler
+    # Dados do que foi solicitado (para comparação no modal de divergência)
+    envio = solicitacao.envios_cotacao.first()
+    solicitado_data = {}
+    if envio:
+        solicitado_data = {
+            'prazo': envio.data_entrega_solicitada.strftime('%d/%m/%Y') if envio.data_entrega_solicitada else 'Prazo flexível',
+            'pagamento': f"{envio.get_forma_pagamento_display()} em {envio.prazo_pagamento} dias",
+            'local': f"{solicitacao.destino.nome} - {solicitacao.destino.endereco}" if solicitacao.destino else f"{solicitacao.obra.nome} - {solicitacao.obra.endereco}"
+        }
+
+    # RETORNO JSON COM O CAMPO 'conformidade' PARA O MODAL
     return JsonResponse({
+        'conformidade': cotacao.conformidade,  # Define se o JS pedirá justificativa
         'vencedora': {
             'fornecedor': cotacao.fornecedor.nome_fantasia or cotacao.fornecedor.nome,
-            'valor': f"R$ {cotacao.valor_total:.2f}".replace('.', ','),
-            'frete': f"R$ {(cotacao.valor_frete or 0):.2f}".replace('.', ','), # Campo corrigido
+            'valor_total': f"{cotacao.valor_total:.2f}".replace('.', ','),
+            'frete': f"{(cotacao.valor_frete or 0):.2f}".replace('.', ','),
             'prazo': cotacao.prazo_entrega or "Não informado",
             'pagamento': cotacao.condicao_pagamento or "Não informado",
+            'local': f"{cotacao.endereco_entrega.nome} - {cotacao.endereco_entrega.endereco}" if cotacao.endereco_entrega else "Não informado"
         },
+        'solicitado': solicitado_data,
         'pendentes': list(pendentes),
         'itens': itens_lista,
     })
+
+@login_required
+@require_http_methods(["POST"])
+def api_validar_senha(request):
+    """
+    Valida a senha do usuário logado.
+    Usado para confirmar aprovação de cotações divergentes.
+    """
+    import json
+    try:
+        data = json.loads(request.body)
+        senha = data.get('senha')
+        
+        if not senha:
+            return JsonResponse({'success': False, 'error': 'Senha não fornecida'}, status=400)
+        
+        # Valida a senha usando authenticate
+        from django.contrib.auth import authenticate
+        user = authenticate(username=request.user.username, password=senha)
+        
+        if user is not None:
+            return JsonResponse({'success': True})
+        else:
+            return JsonResponse({'success': False, 'error': 'Senha incorreta'})
+    
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'error': 'JSON inválido'}, status=400)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
 
 @login_required
 def gerenciar_requisicoes(request):
@@ -2177,20 +2529,19 @@ def api_itens_filtrados(request):
 
 @login_required
 def confirmar_envios_cotacao(request, solicitacao_id):
-    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
-    # Pega os IDs dos envios da query string da URL
-    envios_ids_str = request.GET.get('envios_ids', '')
-    if envios_ids_str:
-        envios_ids = [int(eid) for eid in envios_ids_str.split(',')]
-        envios = EnvioCotacao.objects.filter(id__in=envios_ids).select_related('fornecedor').prefetch_related('itens')
-    else:
-        envios = EnvioCotacao.objects.none()
-
-    context = {
-        'solicitacao': solicitacao,
+    """
+    Exibe os textos formatados para cópia manual.
+    """
+    ids_param = request.GET.get('envios_ids', '')
+    if not ids_param:
+        return HttpResponse("Nenhum envio selecionado.")
+    
+    ids_list = ids_param.split(',')
+    envios = EnvioCotacao.objects.filter(id__in=ids_list).select_related('fornecedor', 'solicitacao__obra')
+    
+    return render(request, 'materiais/confirmar_envios_cotacao.html', {
         'envios': envios
-    }
-    return render(request, 'materiais/confirmar_envios.html', context)
+    })
 
 @login_required
 def api_get_itens_para_receber(request, solicitacao_id):
@@ -2469,10 +2820,86 @@ def editar_fornecedor(request, fornecedor_id):
         return redirect('materiais:dashboard')
     
     fornecedor = get_object_or_404(Fornecedor, id=fornecedor_id)
-    # A lógica de POST/edição ficaria aqui, mas por enquanto retorna um placeholder simples.
     
-    messages.info(request, f'Funcionalidade de edição para {fornecedor.nome_fantasia} em desenvolvimento.')
-    return redirect('materiais:gerenciar_fornecedores')
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                # DADOS BÁSICOS
+                fornecedor.nome_fantasia = request.POST.get('nome_fantasia')
+                fornecedor.razao_social = request.POST.get('razao_social')
+                fornecedor.tipo = request.POST.get('tipo')
+                
+                # CONTATOS (Blindagem contra erro NOT NULL)
+                fornecedor.email = request.POST.get('email', '')
+                fornecedor.contato_nome = request.POST.get('contato_nome', '')
+                fornecedor.contato_telefone = request.POST.get('contato_telefone', '')
+                fornecedor.contato_whatsapp = request.POST.get('contato_whatsapp', '')
+                
+                # ENDEREÇO
+                fornecedor.cep = request.POST.get('cep', '')
+                fornecedor.logradouro = request.POST.get('logradouro', '')
+                fornecedor.numero = request.POST.get('numero', '')
+                fornecedor.bairro = request.POST.get('bairro', '')
+                fornecedor.cidade = request.POST.get('cidade', '')
+                fornecedor.estado = request.POST.get('estado', '').upper()
+                
+                fornecedor.save()
+
+                # ATUALIZAÇÃO DE CATEGORIAS (MANY TO MANY)
+                produtos_ids = request.POST.get('produtos_fornecidos', '')
+                if produtos_ids:
+                    ids_list = [int(x) for x in produtos_ids.split(',') if x.isdigit()]
+                    # Se o seu modelo usa o campo 'categorias', o nome abaixo deve ser 'categorias'
+                    # fornecedor.categorias.set(ids_list)
+                
+            messages.success(request, f'Fornecedor {fornecedor.nome_fantasia} atualizado com sucesso!')
+            return redirect('materiais:gerenciar_fornecedores')
+            
+        except Exception as e:
+            messages.error(request, f'Erro ao atualizar: {e}')
+
+    # Contexto para renderizar a página
+    context = {
+        'fornecedor': fornecedor,
+        'categorias_principais': CategoriaItem.objects.filter(categoria_mae__isnull=True).order_by('nome'),
+        'categorias_selecionadas_json': json.dumps([
+            {'id': c.id, 'nome': c.nome} for c in fornecedor.categorias.all()
+        ]) if hasattr(fornecedor, 'categorias') else "[]"
+    }
+    return render(request, 'materiais/editar_fornecedor.html', context)
+
+@login_required
+def editar_acesso_fornecedor(request, fornecedor_id):
+    """View robusta para alterar credenciais de acesso."""
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        return JsonResponse({'success': False, 'message': 'Acesso negado.'}, status=403)
+        
+    if request.method == 'POST':
+        fornecedor = get_object_or_404(Fornecedor, id=fornecedor_id)
+        user_fornecedor = fornecedor.usuarios_fornecedor.first()
+        
+        if not user_fornecedor:
+            return JsonResponse({'success': False, 'message': 'Este fornecedor não possui um usuário vinculado.'})
+
+        novo_username = request.POST.get('novo_username', '').strip()
+        nova_senha = request.POST.get('nova_senha', '').strip()
+
+        try:
+            with transaction.atomic():
+                if novo_username and novo_username != user_fornecedor.username:
+                    if User.objects.filter(username=novo_username).exists():
+                        return JsonResponse({'success': False, 'message': 'Este nome de utilizador já está em uso.'})
+                    user_fornecedor.username = novo_username
+                
+                if nova_senha:
+                    if len(nova_senha) < 6:
+                        return JsonResponse({'success': False, 'message': 'A senha deve ter no mínimo 6 caracteres.'})
+                    user_fornecedor.set_password(nova_senha)
+                
+                user_fornecedor.save()
+                return JsonResponse({'success': True, 'message': 'Credenciais atualizadas com sucesso!'})
+        except Exception as e:
+            return JsonResponse({'success': False, 'message': str(e)})
 
 
 # Nova View para Alteração de Status (ativar/inativar via AJAX)
@@ -2798,11 +3225,24 @@ def api_subcategorias(request, categoria_id):
 
 @login_required
 def excluir_envio_cotacao(request, envio_id):
-    """Remove um convite de cotação enviado a um fornecedor específico."""
+    """
+    Remove um convite de cotação enviado a um fornecedor específico.
+    BLINDAGEM: Bloqueia a exclusão se já existir um orçamento respondido.
+    """
     if request.method == 'POST' and request.user.perfil in ['almoxarife_escritorio', 'diretor']:
         envio = get_object_or_404(EnvioCotacao, id=envio_id)
         solicitacao = envio.solicitacao
         fornecedor_nome = envio.fornecedor.nome_fantasia
+
+        # --- BLINDAGEM: Verifica se já existe cotação respondida deste fornecedor ---
+        cotacao_existente = solicitacao.cotacoes.filter(fornecedor=envio.fornecedor).exists()
+        if cotacao_existente:
+            messages.error(
+                request, 
+                f"Não é possível excluir o convite do fornecedor {fornecedor_nome} "
+                f"pois já existe um orçamento respondido. Exclua primeiro o orçamento na aba 'Recebidas'."
+            )
+            return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=aguardando")
 
         with transaction.atomic():
             envio.delete()
@@ -2909,37 +3349,53 @@ def marcar_notificacao_lida(request, notificacao_id):
 
 @login_required
 def dashboard_fornecedor(request):
+    """
+    Dashboard principal do portal do fornecedor com contadores de status
+    e sistema de alertas/notificações internas.
+    """
+    # Verificação de segurança de perfil
     if request.user.perfil != 'fornecedor' or not request.user.fornecedor:
         messages.error(request, 'Acesso restrito ao portal do fornecedor.')
         return redirect('materiais:dashboard')
 
     fornecedor = request.user.fornecedor
 
-    # 1. Cotações em Aberto (Vermelho): Convites que ainda não geraram uma cotação com preços
+    # 1. Cotações em Aberto (Vermelho): Convites sem preços registrados
+    # CORREÇÃO: Incluído 'aprovada' para aceitar envios parciais
     abertas = EnvioCotacao.objects.filter(
         fornecedor=fornecedor,
-        solicitacao__status='aguardando_resposta'
+        solicitacao__status__in=['aprovada', 'aguardando_resposta']
     ).exclude(
         solicitacao__cotacoes__fornecedor=fornecedor
     ).distinct()
 
-    # 2. Cotações Enviadas (Amarelo): Preços registrados, aguardando decisão do escritório
+    # 2. Cotações Enviadas (Amarelo): Aguardando decisão do comprador
     enviadas = Cotacao.objects.filter(
         fornecedor=fornecedor,
-        solicitacao__status='aguardando_resposta'
+        solicitacao__status__in=['aprovada', 'aguardando_resposta']
     )
 
-    # 3. Cotações Compradas (Verde): Onde este fornecedor foi o vencedor
+    # 3. Cotações Compradas (Verde): Onde este fornecedor venceu
     compradas = Cotacao.objects.filter(
         fornecedor=fornecedor,
         vencedora=True
     )
 
+    # 4. Sistema de Alertas (Notificações Internas)
+    # Buscamos as notificações não lidas para o contador
+    notificacoes_queryset = NotificacaoFornecedor.objects.filter(
+        fornecedor=fornecedor, 
+        lida=False
+    ).order_by('-data_criacao')
+
     context = {
         'count_abertas': abertas.count(),
         'count_enviadas': enviadas.count(),
         'count_compradas': compradas.count(),
+        'novos_alertas': notificacoes_queryset.count(),  # Número para o "Sininho"
+        'alertas_recentes': notificacoes_queryset[:5],  # Últimas 5 notificações para a lista
     }
+
     return render(request, 'materiais/dashboard_fornecedor.html', context)
 
 @login_required
@@ -2981,10 +3437,23 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
             pgto_final = "Atende"
             motivo_pgto = "Conforme solicitado"
         else:
-            forma = request.POST.get('nova_forma_pagamento')
+            forma_codigo = request.POST.get('nova_forma_pagamento')
             dias = request.POST.get('novo_prazo_dias')
-            # Estrutura a string de pagamento (ex: BOLETO - 30 dias)
-            pgto_final = f"{forma.upper()} - {dias} dias" if forma and dias else "A combinar"
+            
+            # Mapeamento de códigos para nomes formatados
+            formas_pagamento_dict = {
+                'avista': 'À Vista',
+                'pix': 'Pix',
+                'boleto': 'Boleto Bancário',
+                'cartao_credito': 'Cartão de Crédito',
+                'cartao_debito': 'Cartão de Débito',
+                'transferencia': 'Transferência Bancária',
+                'a_negociar': 'A Negociar',
+            }
+            
+            forma_nome = formas_pagamento_dict.get(forma_codigo, forma_codigo.upper() if forma_codigo else 'Não especificado')
+            # Estrutura a string de pagamento (ex: Boleto Bancário - 30 dias)
+            pgto_final = f"{forma_nome} - {dias} dias" if forma_codigo and dias else "A combinar"
             
             # Captura justificativa: se for "Outro", pega o campo de texto livre
             motivo_pgto = request.POST.get('motivo_divergencia_pagamento')
@@ -2993,14 +3462,32 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
 
         # --- 3. CÁLCULO DA CONFORMIDADE (SEMÁFORO) ---
         conf = 'verde'
-        if aceita_prazo == 'nao':
-            conf = 'vermelho' # Divergência de prazo é crítica
+        # Verifica se o endereço de entrega é diferente do solicitado
+        endereco_solicitado_id = solicitacao.destino_id if solicitacao.destino_id else solicitacao.obra_id
+        endereco_cotacao_id = request.POST.get('endereco_entrega_id')
+        endereco_divergente = False
+        if endereco_cotacao_id:
+            try:
+                endereco_divergente = (int(endereco_cotacao_id) != endereco_solicitado_id)
+            except (ValueError, TypeError):
+                pass
+        
+        # VERMELHO: prazo divergente OU endereço divergente (urgência alta)
+        if aceita_prazo == 'nao' or endereco_divergente:
+            conf = 'vermelho' # Divergência de prazo ou endereço é crítica
+        # AMARELO: apenas pagamento divergente (comercial)
         elif aceita_pgto == 'nao':
             conf = 'amarelo'  # Divergência de pagamento é comercial
 
         try:
             with transaction.atomic():
                 # --- 4. SALVAMENTO DA COTAÇÃO ---
+                # Define o endereço de entrega: se não foi enviado, usa o endereço solicitado original
+                endereco_entrega_id = request.POST.get('endereco_entrega_id')
+                if not endereco_entrega_id:
+                    # Se fornecedor não informou, usa o endereço da SC (destino ou obra)
+                    endereco_entrega_id = solicitacao.destino_id if solicitacao.destino_id else solicitacao.obra_id
+                
                 cotacao, created = Cotacao.objects.update_or_create(
                     solicitacao=solicitacao,
                     fornecedor=fornecedor,
@@ -3008,6 +3495,7 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
                         'prazo_entrega': prazo_final,
                         'condicao_pagamento': pgto_final,
                         'valor_frete': request.POST.get('valor_frete') or 0,
+                        'endereco_entrega_id': endereco_entrega_id,
                         'conformidade': conf,
                         'motivo_divergencia_prazo': motivo_prazo,
                         'motivo_divergencia_pagamento': motivo_pgto,
@@ -3020,7 +3508,13 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
                 )
 
                 # --- 5. PROCESSAMENTO DOS PREÇOS DOS ITENS ---
-                for item_sol in solicitacao.itens.all():
+                # CORREÇÃO CRÍTICA: Busca apenas os itens enviados PARA ESTE FORNECEDOR
+                envio = EnvioCotacao.objects.filter(solicitacao=solicitacao, fornecedor=fornecedor).first()
+                if not envio:
+                    raise Exception("Envio de cotação não encontrado para este fornecedor.")
+                
+                # Processa apenas os itens que foram enviados para este fornecedor específico
+                for item_sol in envio.itens.all():
                     preco_raw = request.POST.get(f'preco_{item_sol.id}')
                     if preco_raw:
                         # Limpa a formatação da máscara de dinheiro (remove pontos e troca vírgula por ponto)
@@ -3037,9 +3531,15 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
         except Exception as e:
             messages.error(request, f"Erro técnico ao salvar cotação: {str(e)}")
 
+    # CORREÇÃO: Busca apenas os itens enviados para ESTE fornecedor específico
+    envio = EnvioCotacao.objects.filter(solicitacao=solicitacao, fornecedor=fornecedor).first()
+    itens_para_cotar = envio.itens.all() if envio else []
+    
     context = {
         'solicitacao': solicitacao,
         'cotacao': cotacao_existente,
+        'itens_para_cotar': itens_para_cotar,  # Apenas itens enviados para este fornecedor
+        'envio_original': envio,
     }
     return render(request, 'materiais/responder_cotacao.html', context)
 
@@ -3052,10 +3552,11 @@ def lista_cotacoes_fornecedor(request):
     fornecedor = request.user.fornecedor
     filtro = request.GET.get('filtro') # Captura se é 'aberto' ou 'enviadas'
 
-    # 1. Busca todas as SCs onde o fornecedor foi convidado
+    # 1. CORREÇÃO: Busca todas as SCs onde o fornecedor foi convidado (incluindo envios parciais)
+    # Não filtra mais por status específico - se há EnvioCotacao, o fornecedor pode responder!
     solicitacoes_base = SolicitacaoCompra.objects.filter(
         envios_cotacao__fornecedor=fornecedor,
-        status__in=['em_cotacao', 'aguardando_resposta']
+        status__in=['aprovada', 'em_cotacao', 'aguardando_resposta']  # Incluído 'aprovada' para envios parciais
     ).distinct()
 
     # 2. Identifica quais já foram respondidas
@@ -3102,12 +3603,16 @@ def fornecedor_excluir_propria_cotacao(request, solicitacao_id):
             with transaction.atomic():
                 cotacao.delete()
                 
+                # Reverte o status da SC para aguardando_resposta
+                solicitacao.status = 'aguardando_resposta'
+                solicitacao.save()
+                
                 # Registra no histórico da SC que o fornecedor removeu os preços
                 HistoricoSolicitacao.objects.create(
                     solicitacao=solicitacao,
                     usuario=request.user,
                     acao="Preços Removidos pelo Fornecedor",
-                    detalhes=f"O fornecedor {nome_fornecedor} excluiu sua proposta de preços."
+                    detalhes=f"O fornecedor {nome_fornecedor} excluiu sua proposta de preços. Status revertido para Em Aberto."
                 )
 
             messages.success(request, "Seus preços foram removidos. Você pode enviar uma nova proposta quando desejar.")
@@ -3134,3 +3639,26 @@ def lista_pedidos_fornecedor(request):
         'titulo_pagina': "Meus Pedidos (Cotações Compradas)"
     }
     return render(request, 'materiais/lista_pedidos_fornecedor.html', context)
+
+@login_required
+def marcar_notificacao_lida(request, notificacao_id):
+    """
+    Marca uma notificação específica como lida e redireciona o fornecedor
+    para o link de destino (ex: a cotação ou o pedido).
+    """
+    # Garante que o fornecedor só consiga marcar como lida as suas próprias notificações
+    notificacao = get_object_or_404(
+        NotificacaoFornecedor, 
+        id=notificacao_id, 
+        fornecedor=request.user.fornecedor
+    )
+    
+    notificacao.lida = True
+    notificacao.save()
+    
+    # Se a notificação tiver um link, leva o utilizador até lá
+    if notificacao.link:
+        return redirect(notificacao.link)
+        
+    # Caso contrário, volta para o dashboard
+    return redirect('materiais:dashboard_fornecedor')

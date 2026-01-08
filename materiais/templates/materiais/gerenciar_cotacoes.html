@@ -3,7 +3,6 @@
 
 {% block content %}
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
-<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js" defer></script>
 
 <style>
     {% include 'materiais/styles_dashboard.css' %}
@@ -15,13 +14,21 @@
     .sc-card { border-left: 4px solid #0d6efd; }
     .label-mini { font-size: 0.7rem; color: #6c757d; text-transform: uppercase; font-weight: bold; margin-bottom: 0.2rem; }
     .btn-sm { font-size: 0.85rem !important; padding: 0.35rem 0.75rem !important; font-weight: 500; }
+
+    /* Estilos de Suavização e Auditoria (Item Solicitado) */
+    .modal-header-suave { background-color: #ffffff !important; color: #333333 !important; border-bottom: 1px solid #dee2e6 !important; }
+    .modal-header-suave .btn-close { filter: none !important; }
+    .audit-popup { position: absolute; right: 0; z-index: 1000; }
+    .audit-container { position: relative; }
+    .disparo-item { border-left: 4px solid #dee2e6; transition: all 0.2s; }
+    .disparo-item.ready { border-left-color: #198754; background-color: #f8fff9; }
 </style>
 
 <div class="d-flex align-items-center mb-3">
     <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
     <div>
         <h4 class="mb-0">Pedidos de Cotação</h4>
-        <p class="text-muted mb-0">Gerencie as cotações das solicitações de compra de forma unificada.</p>
+        <p class="text-muted mb-0 small">Gerencie as cotações das solicitações de compra de forma unificada e segura.</p>
     </div>
 </div>
 <hr class="mb-4">
@@ -56,35 +63,62 @@
 <div class="tab-content" id="cotacoesTabContent">
     <div class="tab-pane fade show active p-3" id="iniciar-cotacao" role="tabpanel">
         {% for sc in scs_para_iniciar %}
-        <div class="card mb-3 sc-card" style="border-left-color: #198754;">
+        <div class="card mb-3 sc-card" style="border-left-color: {% if sc.tem_envios_parciais %}#ffc107{% else %}#198754{% endif %};">
             <div class="card-body">
                 <div class="row align-items-center">
                     <div class="col-md-7">
-                        <h5 class="mb-1">{{ sc.nome_descritivo }}</h5>
+                        <h5 class="mb-1 text-dark fw-normal">
+                            {{ sc.nome_descritivo }}
+                            {% if sc.tem_envios_parciais %}
+                            <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem;">
+                                <i class="fas fa-exclamation-triangle me-1"></i>ENVIO PARCIAL
+                            </span>
+                            {% endif %}
+                        </h5>
                         <div class="d-flex flex-wrap gap-3 text-muted small mt-2">
                             <span><strong>Código:</strong> {{ sc.numero }}</span>
                             <span><strong>Obra:</strong> {{ sc.obra.nome }}</span>
                             <span><i class="fas fa-calendar-alt"></i> <strong>Necessário:</strong> {{ sc.data_necessidade|date:"d/m/Y" }}</span>
+                            {% if sc.tem_envios_parciais %}
+                            <span class="text-warning"><i class="fas fa-list-check"></i> <strong>Itens Enviados:</strong> {{ sc.itens_enviados_count }}/{{ sc.total_itens }}</span>
+                            {% endif %}
                         </div>
+                        {% if sc.tem_envios_parciais %}
+                        <div class="mt-2">
+                            <button class="btn btn-xs btn-outline-warning" type="button" data-bs-toggle="collapse" data-bs-target="#itensPendentes{{ sc.id }}">
+                                <i class="fas fa-eye me-1"></i>Ver Itens Pendentes
+                            </button>
+                            <div class="collapse mt-2" id="itensPendentes{{ sc.id }}">
+                                <div class="alert alert-warning py-2 px-3 mb-0 small">
+                                    <strong>Itens ainda não enviados para cotação:</strong>
+                                    <ul class="mb-0 mt-1">
+                                        {% for item in sc.itens_pendentes %}
+                                        <li>{{ item.descricao }} ({{ item.quantidade|floatformat:"0" }} {{ item.unidade }})</li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
                     </div>
                     <div class="col-md-5 text-end">
                         <div class="btn-group">
-                            <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#solicitarCotacaoModal" data-sc-id="{{ sc.id }}" data-sc-name="{{ sc.nome_descritivo }}">Iniciar Cotação</button>
-                            <button type="button" class="btn btn-sm btn-success dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown"></button>
+                            <button class="btn btn-sm {% if sc.tem_envios_parciais %}btn-warning{% else %}btn-success{% endif %}" data-bs-toggle="modal" data-bs-target="#solicitarCotacaoModal" data-sc-id="{{ sc.id }}" data-sc-name="{{ sc.nome_descritivo }}">
+                                {% if sc.tem_envios_parciais %}Continuar Cotação{% else %}Iniciar Cotação{% endif %}
+                            </button>
+                            <button type="button" class="btn btn-sm {% if sc.tem_envios_parciais %}btn-warning{% else %}btn-success{% endif %} dropdown-toggle dropdown-toggle-split" data-bs-toggle="dropdown"></button>
                             <ul class="dropdown-menu shadow">
-                                <li><a class="dropdown-item" href="{% url 'materiais:escritorio_editar_sc' sc.id %}">Editar</a></li>
-                                <li><button class="dropdown-item text-danger" onclick="abrirModalRejeicao('{{ sc.id }}', '{{ sc.nome_descritivo }}')">Rejeitar</button></li>
+                                <li><a class="dropdown-item" href="{% url 'materiais:escritorio_editar_sc' sc.id %}">Editar Solicitação</a></li>
+                                <li><button class="dropdown-item text-danger" onclick="abrirModalRejeicao('{{ sc.id }}', '{{ sc.nome_descritivo }}')">Rejeitar para Obra</button></li>
                                 <li><hr class="dropdown-divider"></li>
-                                <li><button class="dropdown-item" data-bs-toggle="modal" data-bs-target="#modalDetalhesSC" data-sc-id="{{ sc.id }}">Ver Detalhes</button></li>
+                                <li><button class="dropdown-item" data-bs-toggle="modal" data-bs-target="#modalDetalhesSC" data-sc-id="{{ sc.id }}">Ver Detalhes da SC</button></li>
                             </ul>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
-        {% empty %}
-        <div class="text-center p-5 text-muted"><h5>Nenhuma solicitação para iniciar.</h5></div>
-        {% endfor %}
+        {% empty %}<div class="text-center p-5 text-muted"><h5>Nenhuma solicitação para iniciar.</h5></div>{% endfor %}
     </div>
 
     <div class="tab-pane fade p-3" id="aguardando" role="tabpanel">
@@ -92,33 +126,35 @@
             <h5 class="mb-3"><span class="badge bg-danger">Pendente</span> <span class="ms-2">Aguardando Primeiros Preços</span></h5>
             {% for sc in scs_em_cotacao %}
                 {% if not sc.cotacoes_recebidas_ids %}
-                <div class="card mb-3 sc-card" style="border-left-color: #dc3545;">
+                <div class="card mb-3 sc-card" style="border-left-color: {% if sc.tem_itens_pendentes %}#ffc107{% else %}#dc3545{% endif %};">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-3">
-                            <h5 class="mb-1">{{ sc.nome_descritivo }}</h5>
+                            <div>
+                                <h5 class="mb-1 text-dark fw-normal">
+                                    {{ sc.nome_descritivo }}
+                                    {% if sc.tem_itens_pendentes %}
+                                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem;">
+                                        <i class="fas fa-exclamation-triangle me-1"></i>ITENS PENDENTES
+                                    </span>
+                                    {% endif %}
+                                </h5>
+                                {% if sc.tem_itens_pendentes %}
+                                <div class="alert alert-warning py-1 px-2 mb-0 mt-2 small d-inline-block">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    <strong>{{ sc.itens_enviados_count }}/{{ sc.total_itens }} itens enviados.</strong> 
+                                    Faltam {{ sc.itens_pendentes_count }} item{{ sc.itens_pendentes_count|pluralize }} para completar a SC.
+                                </div>
+                                {% endif %}
+                            </div>
                             <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#solicitarCotacaoModal" data-sc-id="{{ sc.id }}" data-sc-name="{{ sc.nome_descritivo }}"><i class="fas fa-user-plus me-1"></i> Convidar Fornecedores</button>
                         </div>
                         <div class="bg-light rounded p-3">
                             {% for envio in sc.envios_cotacao.all %}
                             <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-                                <div><strong>{{ envio.fornecedor.nome_fantasia }}</strong><small class="d-block text-muted">Enviado: {{ envio.data_envio|date:"d/m/Y" }}</small></div>
+                                <div><strong>{{ envio.fornecedor.nome_fantasia }}</strong><small class="d-block text-muted">Convite enviado em: {{ envio.data_envio|date:"d/m/Y H:i" }}</small></div>
                                 <div class="d-flex gap-2 align-items-center">
-                                    {% if envio.fornecedor_id in sc.cotacoes_recebidas_ids %}
-                                        {% for c in sc.cotacoes.all %}
-                                            {% if c.fornecedor_id == envio.fornecedor_id %}
-                                                <div class="text-end me-2">
-                                                    <span class="badge bg-success d-block mb-1" style="font-size: 0.85rem;"><i class="fas fa-check-double me-1"></i> PREÇO RECEBIDO</span>
-                                                    <small class="text-muted d-block" style="font-size: 0.7rem; line-height: 1.1;">
-                                                        {% if c.origem == 'manual' %}<i class="fas fa-user-edit text-info"></i> Manual: {{ c.registrado_por.username }}{% else %}<i class="fas fa-globe text-primary"></i> Via Portal{% endif %}
-                                                        <br>{{ c.data_registro|date:"d/m H:i" }}
-                                                    </small>
-                                                </div>
-                                            {% endif %}
-                                        {% endfor %}
-                                    {% else %}
-                                        <a href="{% url 'materiais:iniciar_cotacao_fornecedor' sc.id envio.fornecedor.id %}" class="btn btn-sm btn-warning"><i class="fas fa-keyboard me-1"></i> REGISTRAR PREÇO</a>
-                                        <span class="btn btn-sm btn-outline-danger disabled" style="opacity: 1; border-style: dashed; font-weight: 600;"><i class="fas fa-hourglass-half me-1"></i> AGUARDANDO</span>
-                                    {% endif %}
+                                    <a href="{% url 'materiais:iniciar_cotacao_fornecedor' sc.id envio.fornecedor.id %}" class="btn btn-sm btn-warning fw-bold"><i class="fas fa-keyboard me-1"></i> REGISTRAR PREÇO</a>
+                                    <span class="btn btn-sm btn-outline-danger disabled" style="opacity: 1; border-style: dashed; font-weight: 600;"><i class="fas fa-hourglass-half me-1"></i> AGUARDANDO</span>
                                     <form action="{% url 'materiais:excluir_envio_cotacao' envio.id %}" method="post" style="display:inline;">
                                         {% csrf_token %}
                                         <button type="button" class="btn btn-sm btn-danger" onclick="abrirModalExclusao(this, 'fornecedor')">EXCLUIR</button>
@@ -126,13 +162,22 @@
                                 </div>
                             </div>
                             {% endfor %}
+                            {% if sc.tem_itens_pendentes %}
+                            <div class="mt-3 pt-2 border-top">
+                                <button class="btn btn-sm btn-warning" data-bs-toggle="modal" data-bs-target="#solicitarCotacaoModal" data-sc-id="{{ sc.id }}" data-sc-name="{{ sc.nome_descritivo }}">
+                                    <i class="fas fa-plus-circle me-1"></i>Enviar Itens Pendentes
+                                </button>
+                            </div>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
                 {% endif %}
             {% endfor %}
         </div>
+        
         <hr>
+        
         <div class="mt-4">
             <h5 class="mb-3"><span class="badge bg-warning text-dark">Parcialmente Completa</span> <span class="ms-2">Aguardando Demais Fornecedores</span></h5>
             {% for sc in scs_em_cotacao %}
@@ -140,28 +185,56 @@
                 <div class="card mb-3 sc-card" style="border-left-color: #ffc107;">
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-3">
-                            <h5 class="mb-1">{{ sc.nome_descritivo }}</h5>
+                            <div>
+                                <h5 class="mb-1 text-dark fw-normal">
+                                    {{ sc.nome_descritivo }}
+                                    {% if sc.tem_itens_pendentes %}
+                                    <span class="badge bg-warning text-dark ms-2" style="font-size: 0.65rem;">
+                                        <i class="fas fa-exclamation-triangle me-1"></i>ITENS PENDENTES
+                                    </span>
+                                    {% endif %}
+                                </h5>
+                                {% if sc.tem_itens_pendentes %}
+                                <div class="alert alert-warning py-1 px-2 mb-0 mt-2 small d-inline-block">
+                                    <i class="fas fa-info-circle me-1"></i>
+                                    <strong>{{ sc.itens_enviados_count }}/{{ sc.total_itens }} itens enviados.</strong> 
+                                    Faltam {{ sc.itens_pendentes_count }} item{{ sc.itens_pendentes_count|pluralize }} para completar a SC.
+                                </div>
+                                {% endif %}
+                            </div>
                             <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#solicitarCotacaoModal" data-sc-id="{{ sc.id }}" data-sc-name="{{ sc.nome_descritivo }}"><i class="fas fa-user-plus me-1"></i> Convidar Fornecedores</button>
                         </div>
                         <div class="bg-light rounded p-3">
                             {% for envio in sc.envios_cotacao.all %}
                             <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-                                <div><strong>{{ envio.fornecedor.nome_fantasia }}</strong><small class="d-block text-muted">Enviado: {{ envio.data_envio|date:"d/m/Y" }}</small></div>
+                                <div><strong>{{ envio.fornecedor.nome_fantasia }}</strong><small class="d-block text-muted">Convite enviado em: {{ envio.data_envio|date:"d/m/Y" }}</small></div>
                                 <div class="d-flex gap-2 align-items-center">
                                     {% if envio.fornecedor_id in sc.cotacoes_recebidas_ids %}
-                                        {% for c in sc.cotacoes.all %}
-                                            {% if c.fornecedor_id == envio.fornecedor_id %}
-                                                <div class="text-end me-2">
-                                                    <span class="badge bg-success d-block mb-1" style="font-size: 0.85rem;"><i class="fas fa-check-double me-1"></i> PREÇO RECEBIDO</span>
-                                                    <small class="text-muted d-block" style="font-size: 0.7rem; line-height: 1.1;">
-                                                        {% if c.origem == 'manual' %}<i class="fas fa-user-edit text-info"></i> Manual: {{ c.registrado_por.username }}{% else %}<i class="fas fa-globe text-primary"></i> Via Portal{% endif %}
-                                                        <br>{{ c.data_registro|date:"d/m H:i" }}
-                                                    </small>
+                                        <div class="text-end me-2 position-relative audit-container">
+                                            <div class="d-flex align-items-center justify-content-end gap-2">
+                                                <span class="badge bg-success" style="font-size: 0.8rem;"><i class="fas fa-check-double me-1"></i> PREÇO RECEBIDO</span>
+                                                {% for c in sc.cotacoes.all %}
+                                                    {% if c.fornecedor_id == envio.fornecedor_id %}
+                                                        <button class="btn btn-link btn-sm p-0 text-muted btn-audit-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#audit{{ c.id }}"><i class="fas fa-chevron-down" style="font-size: 0.75rem;"></i></button>
+                                                    {% endif %}
+                                                {% endfor %}
+                                            </div>
+                                            {% for c in sc.cotacoes.all %}
+                                                {% if c.fornecedor_id == envio.fornecedor_id %}
+                                                <div class="collapse mt-1 audit-popup" id="audit{{ c.id }}">
+                                                    <div class="card card-body p-2 shadow-sm border-success text-start" style="min-width: 190px; background: #f8fff9;">
+                                                        <small class="d-block text-muted mb-1" style="font-size: 0.55rem; text-transform: uppercase;">Preenchido por:</small>
+                                                        <small class="d-block text-dark fw-bold" style="font-size: 0.7rem;"><i class="fas fa-user-edit me-1 text-success"></i>{% if c.registrado_por %}{{ c.registrado_por.get_full_name|default:c.registrado_por.username }}{% else %}Fornecedor (Portal){% endif %}</small>
+                                                        <small class="d-block text-muted mt-1" style="font-size: 0.6rem;"><i class="far fa-clock me-1"></i>{{ c.data_registro|date:"d/m/Y H:i" }}</small>
+                                                        <hr class="my-1 opacity-25">
+                                                        <small class="d-block text-muted" style="font-size: 0.55rem;">Origem: {{ c.get_origem_display }}</small>
+                                                    </div>
                                                 </div>
-                                            {% endif %}
-                                        {% endfor %}
+                                                {% endif %}
+                                            {% endfor %}
+                                        </div>
                                     {% else %}
-                                        <a href="{% url 'materiais:iniciar_cotacao_fornecedor' sc.id envio.fornecedor.id %}" class="btn btn-sm btn-warning"><i class="fas fa-keyboard me-1"></i> REGISTRAR PREÇO</a>
+                                        <a href="{% url 'materiais:iniciar_cotacao_fornecedor' sc.id envio.fornecedor.id %}" class="btn btn-sm btn-warning fw-bold"><i class="fas fa-keyboard me-1"></i> REGISTRAR PREÇO</a>
                                         <span class="btn btn-sm btn-outline-danger disabled" style="opacity: 1; border-style: dashed; font-weight: 600;"><i class="fas fa-hourglass-half me-1"></i> AGUARDANDO</span>
                                     {% endif %}
                                     <form action="{% url 'materiais:excluir_envio_cotacao' envio.id %}" method="post" style="display:inline;">
@@ -171,11 +244,20 @@
                                 </div>
                             </div>
                             {% endfor %}
-                            <div class="mt-3 pt-2 border-top text-end">
-                                <form action="{% url 'materiais:finalizar_coleta_precos' sc.id %}" method="post" style="display:inline;">
-                                    {% csrf_token %}
-                                    <button type="submit" class="btn btn-sm btn-outline-primary" onclick="return confirm('Deseja finalizar a coleta e analisar os preços já recebidos?');">Finalizar Coleta e Analisar</button>
-                                </form>
+                            <div class="mt-3 pt-2 border-top">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    {% if sc.tem_itens_pendentes %}
+                                    <button class="btn btn-sm btn-warning" data-bs-toggle="modal" data-bs-target="#solicitarCotacaoModal" data-sc-id="{{ sc.id }}" data-sc-name="{{ sc.nome_descritivo }}">
+                                        <i class="fas fa-plus-circle me-1"></i>Enviar Itens Pendentes
+                                    </button>
+                                    {% else %}
+                                    <div></div>
+                                    {% endif %}
+                                    <form action="{% url 'materiais:finalizar_coleta_precos' sc.id %}" method="post" style="display:inline;">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-primary" onclick="return confirm('Deseja encerrar a fase de coleta? Ao avançar, fornecedores que ainda não responderam não conseguirão mais enviar propostas.');">Finalizar Coleta e Analisar</button>
+                                    </form>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -189,12 +271,12 @@
         {% for sc in scs_recebidas %}
         <div class="card mb-4 sc-card" style="border-left-color: #198754;">
             <div class="card-header bg-white d-flex justify-content-between align-items-center border-0 pt-3">
-                <h5 class="mb-0 text-dark">{{ sc.nome_descritivo }}</h5>
+                <h5 class="mb-0 text-dark fw-normal">{{ sc.nome_descritivo }}</h5>
                 <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#modalDetalhesSC" data-sc-id="{{ sc.id }}">Ver Detalhes</button>
             </div>
             <div class="card-body pt-0">
                 {% for cotacao in sc.cotacoes.all %}
-                <div class="border rounded p-3 mb-3 bg-white shadow-sm">
+                <div class="border rounded p-3 mb-3 bg-white shadow-sm cotacao-card" data-cotacao-id="{{ cotacao.id }}">
                     <div class="row align-items-center">
                         <div class="col-md-7">
                             <h6 class="mb-1 fw-bold text-primary">{{ cotacao.fornecedor.nome_fantasia }}</h6>
@@ -203,68 +285,125 @@
                         <div class="col-md-5 text-end">
                             <div class="d-flex gap-2 justify-content-end">
                                 <button class="btn btn-sm btn-outline-info" type="button" data-bs-toggle="collapse" data-bs-target="#detalhesCotacao{{ cotacao.id }}">Ver Orçamento</button>
-                                <button type="button" class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#confirmarVencedorModal" data-cotacao-id="{{ cotacao.id }}">Selecionar Vencedora</button>
+                                <button type="button" class="btn btn-sm btn-success btn-selecionar-vencedora" data-cotacao-id="{{ cotacao.id }}">Selecionar Vencedora</button>
                                 <form action="{% url 'materiais:rejeitar_cotacao' cotacao.id %}" method="post" style="display:inline;">
                                     {% csrf_token %}
-                                    <button type="button" class="btn btn-sm btn-danger" onclick="abrirModalExclusao(this, 'cotação')">EXCLUIR</button>
+                                    <button type="button" class="btn btn-sm btn-warning" onclick="abrirModalExclusao(this, 'cotação')"><i class="fas fa-edit me-1"></i>ALTERAR COTAÇÃO</button>
                                 </form>
                             </div>
                         </div>
                     </div>
+                    
+                    <!-- STATUS VISUAL MELHORADO -->
                     <div class="row mt-3">
-                        <div class="col-12 p-3 rounded border {% if cotacao.conformidade == 'verde' %}border-success{% elif cotacao.conformidade == 'amarelo' %}border-warning{% else %}border-danger{% endif %}" style="background-color: #fdfdfd; border-width: 2px !important;">
-                            <div class="row align-items-center">
-                                <div class="col-md-2 text-center border-end">
-                                    <div class="label-mini text-muted mb-1" style="font-size: 0.65rem;">CONFORMIDADE</div>
-                                    {% if cotacao.conformidade == 'verde' %}<span class="badge bg-success w-100"><i class="fas fa-check-circle me-1"></i> CONFORME</span>
-                                    {% elif cotacao.conformidade == 'amarelo' %}<span class="badge bg-warning text-dark w-100"><i class="fas fa-exclamation-circle me-1"></i> ATENÇÃO</span>
-                                    {% else %}<span class="badge bg-danger w-100"><i class="fas fa-times-circle me-1"></i> DIVERGENTE</span>{% endif %}
-                                </div>
-                                <div class="col-md-4 border-end">
-                                    <div class="label-mini text-muted mb-1" style="font-size: 0.65rem;">PRAZO DE ENTREGA</div>
-                                    {% if cotacao.prazo_entrega == "Atende" %}<div class="text-success fw-bold"><i class="fas fa-calendar-check me-1"></i> Atende: {{ sc.data_necessidade|date:"d/m/Y" }}</div>
-                                    {% else %}
-                                        <div class="small">
-                                            <span class="text-muted text-decoration-line-through">{{ cotacao.prazo_original_escritorio|default:sc.data_necessidade|date:"d/m/Y" }}</span>
-                                            <i class="fas fa-arrow-right mx-2 text-danger"></i>
-                                            <span class="text-danger fw-bold">{{ cotacao.prazo_entrega }}</span>
-                                            {% if cotacao.motivo_divergencia_prazo %}<div class="mt-1 text-muted" style="font-size: 0.7rem; font-style: italic;"><strong>Motivo:</strong> {{ cotacao.motivo_divergencia_prazo }}</div>{% endif %}
+                        <div class="col-12">
+                            {% if cotacao.conformidade == 'verde' %}
+                            <div class="alert alert-success mb-0 py-2">
+                                <i class="fas fa-check-circle me-2"></i>
+                                <strong>A proposta atende todos os requisitos solicitados</strong> 
+                            </div>
+                            {% elif cotacao.conformidade == 'amarelo' %}
+                            <div class="alert alert-warning mb-0 py-2">
+                                <i class="fas fa-exclamation-triangle me-2"></i>
+                                <strong>Atenção, houve alteração na forma de pagamento.</strong> 
+                                <button class="btn btn-sm btn-warning ms-2" type="button" data-bs-toggle="collapse" data-bs-target="#detalheDivergencia{{ cotacao.id }}">
+                                    Ver Diferenças
+                                </button>
+                            </div>
+                            {% else %}
+                            <div class="alert alert-danger mb-0 py-2">
+                                <i class="fas fa-times-circle me-2"></i>
+                                <strong>Atenção, data ou endereço de entrega está diferente da condição inicial</strong>
+                                <button class="btn btn-sm btn-danger ms-2" type="button" data-bs-toggle="collapse" data-bs-target="#detalheDivergencia{{ cotacao.id }}">
+                                    Ver o que mudou
+                                </button>
+                            </div>
+                            {% endif %}
+                            
+                            <!-- DETALHES DAS DIVERGÊNCIAS -->
+                            {% if cotacao.conformidade != 'verde' %}
+                            <div class="collapse mt-2" id="detalheDivergencia{{ cotacao.id }}">
+                                <div class="card card-body bg-light">
+                                    <h6 class="text-danger mb-3"><i class="fas fa-list-ul me-2"></i>Detalhes das Diferenças:</h6>
+                                    
+                                    <!-- PRAZO DE ENTREGA -->
+                                    <div class="mb-3 pb-3 border-bottom">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <small class="text-muted d-block mb-1"><i class="fas fa-calendar-check me-1"></i>DATA SOLICITADA:</small>
+                                                <strong class="text-success">{{ sc.envios_cotacao.first.data_entrega_solicitada|date:"d/m/Y"|default:"Prazo flexível" }}</strong>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <small class="text-muted d-block mb-1"><i class="fas fa-truck me-1"></i>DATA FINAL REGISTRADA:</small>
+                                                <strong class="{% if cotacao.prazo_entrega == 'Atende' %}text-success{% else %}text-danger{% endif %}">
+                                                    {{ cotacao.prazo_entrega }}
+                                                </strong>
+                                                {% if cotacao.prazo_entrega != 'Atende' %}
+                                                <div class="mt-1">
+                                                    <small class="text-muted d-block">Motivo:</small>
+                                                    <small class="text-danger">{{ cotacao.motivo_divergencia_prazo|default:"Não informado" }}</small>
+                                                </div>
+                                                {% endif %}
+                                            </div>
                                         </div>
-                                    {% endif %}
-                                </div>
-                                <div class="col-md-4 border-end">
-                                    <div class="label-mini text-muted mb-1" style="font-size: 0.65rem;">CONDIÇÃO DE PAGAMENTO</div>
-                                    {% if cotacao.condicao_pagamento == "Atende" %}<div class="text-success fw-bold small"><i class="fas fa-credit-card me-1"></i> Conforme Solicitado</div>
-                                    {% else %}
-                                        <div class="small">
-                                            <span class="text-muted text-decoration-line-through">{{ cotacao.pagamento_original_escritorio|default:"Padrão" }}</span>
-                                            <i class="fas fa-arrow-right mx-2 text-danger"></i>
-                                            <span class="text-danger fw-bold">{{ cotacao.condicao_pagamento }}</span>
-                                            {% if cotacao.motivo_divergencia_pagamento %}<div class="mt-1 text-muted" style="font-size: 0.7rem; font-style: italic;"><strong>Motivo:</strong> {{ cotacao.motivo_divergencia_pagamento }}</div>{% endif %}
+                                    </div>
+                                    
+                                    <!-- FORMA DE PAGAMENTO -->
+                                    <div class="mb-3 pb-3 border-bottom">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <small class="text-muted d-block mb-1"><i class="fas fa-credit-card me-1"></i>CONDIÇÕES DE PAGAMENTO SOLICITADA:</small>
+                                                <strong class="text-success">{{ sc.envios_cotacao.first.get_forma_pagamento_display }} em {{ sc.envios_cotacao.first.prazo_pagamento }} dias</strong>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <small class="text-muted d-block mb-1"><i class="fas fa-money-bill-wave me-1"></i>CONDIÇÃO DE PAGAMENTO FINAL:</small>
+                                                <strong class="{% if cotacao.condicao_pagamento == 'Atende' %}text-success{% else %}text-warning{% endif %}">
+                                                    {{ cotacao.condicao_pagamento }}
+                                                </strong>
+                                                {% if cotacao.condicao_pagamento != 'Atende' %}
+                                                <div class="mt-1">
+                                                    <small class="text-muted d-block">Motivo:</small>
+                                                    <small class="text-warning">{{ cotacao.motivo_divergencia_pagamento|default:"Não informado" }}</small>
+                                                </div>
+                                                {% endif %}
+                                            </div>
                                         </div>
-                                    {% endif %}
-                                </div>
-                                <div class="col-md-2 text-end">
-                                    <div class="label-mini text-muted mb-1" style="font-size: 0.65rem;">ORIGEM / DATA</div>
-                                    <div class="small fw-bold" style="font-size: 0.8rem;">
-                                        {% if cotacao.origem == 'manual' %}<span class="text-info" title="Inserido por {{ cotacao.registrado_por.username }}"><i class="fas fa-user-edit"></i> Manual</span>{% else %}<span class="text-primary"><i class="fas fa-globe"></i> Portal</span>{% endif %}
-                                        <br><span class="text-muted fw-normal">{{ cotacao.data_registro|date:"d/m H:i" }}</span>
+                                    </div>
+                                    
+                                    <!-- LOCAL DE ENTREGA -->
+                                    <div>
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <small class="text-muted d-block mb-1"><i class="fas fa-map-marker-alt me-1"></i>ENDEREÇO DE ENTREGA SOLICITADO:</small>
+                                                <strong class="text-success">{% if sc.destino %}{{ sc.destino.nome }}{% else %}{{ sc.obra.nome }}{% endif %}</strong>
+                                                <small class="d-block text-muted">{{ sc.destino.endereco|default:sc.obra.endereco }}</small>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <small class="text-muted d-block mb-1"><i class="fas fa-shipping-fast me-1"></i>ENDEREÇO DE ENTREGA FINAL:</small>
+                                                <strong class="{% if cotacao.endereco_entrega.id == sc.destino.id or cotacao.endereco_entrega.id == sc.obra.id %}text-success{% else %}text-danger{% endif %}">
+                                                    {{ cotacao.endereco_entrega.nome }}
+                                                </strong>
+                                                <small class="d-block text-muted">{{ cotacao.endereco_entrega.endereco }}</small>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
+                            {% endif %}
                         </div>
                     </div>
+
                     <div class="collapse mt-3" id="detalhesCotacao{{ cotacao.id }}">
                         <div class="table-responsive bg-light p-2 rounded border">
-                            <table class="table table-sm table-borderless mb-0 small">
+                            <table class="table table-sm table-borderless mb-0 small text-center">
                                 <thead class="text-muted border-bottom">
-                                    <tr><th>Item</th><th class="text-center">Qtd</th><th class="text-end">V. Unitário</th><th class="text-end">Subtotal</th></tr>
+                                    <tr><th>Item</th><th>Qtd</th><th class="text-end">V. Unitário</th><th class="text-end">Subtotal</th></tr>
                                 </thead>
                                 <tbody>
                                     {% for ic in cotacao.itens_cotados.all %}
                                     <tr>
                                         <td>{{ ic.item_solicitacao.descricao }}</td>
-                                        <td class="text-center">{{ ic.item_solicitacao.quantidade|floatformat:0 }} {{ ic.item_solicitacao.unidade }}</td>
+                                        <td>{{ ic.item_solicitacao.quantidade|floatformat:0 }} {{ ic.item_solicitacao.unidade }}</td>
                                         <td class="text-end">R$ {{ ic.preco|floatformat:2 }}</td>
                                         <td class="text-end fw-bold">R$ {{ ic.get_subtotal|floatformat:2 }}</td>
                                     </tr>
@@ -278,31 +417,156 @@
                 {% endfor %}
             </div>
         </div>
-        {% empty %}
-        <div class="text-center p-5 text-muted"><h5>Nenhuma cotação pronta para análise final.</h5></div>
-        {% endfor %}
+        {% empty %}<div class="text-center p-5 text-muted"><h5>Nenhuma cotação pronta para análise final.</h5></div>{% endfor %}
     </div>
 </div>
 
-<form id="rejectForm" method="post" style="display: none;">{% csrf_token %}<input type="hidden" name="motivo" id="rejectMotivo"></form>
 {% include 'materiais/_modal_detalhes_sc.html' %}
-{% include 'materiais/_modal_solicitar_cotacao.html' %}
 
-<div class="modal fade" id="modalConfirmarExclusao" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
+<div class="modal fade" id="solicitarCotacaoModal" tabindex="-1" aria-labelledby="solicitarCotacaoModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <form id="formPrepararCotacao">
+                <div class="modal-header modal-header-suave py-3">
+                    <h5 class="modal-title fw-normal" id="solicitarCotacaoModalLabel">
+                        Solicitar Cotação: <span id="sc_name_display" class="fw-medium text-secondary"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <div class="row">
+                        <div class="col-md-7 border-end">
+                            <div class="mb-3">
+                                <label class="form-label text-muted small fw-bold">BUSCAR FORNECEDORES *</label>
+                                <select id="fornecedorSelect" name="fornecedor" class="form-control" style="width: 100%;" required multiple="multiple"></select>
+                                <div class="form-text" id="fornecedorCounter" style="font-size: 0.7rem;">Nenhum fornecedor selecionado</div>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">PRAZO PARA RESPOSTA</label>
+                                    <input type="date" class="form-control form-control-sm border-light-subtle" name="prazo_resposta">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">FORMA DE PAGAMENTO *</label>
+                                    <select class="form-select form-select-sm border-light-subtle" name="forma_pagamento" required>
+                                        {% for valor, label in formas_pagamento %}
+                                            <option value="{{ valor }}" {% if valor == 'a_negociar' %}selected{% endif %}>{{ label }}</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label text-muted small fw-bold">PRAZO DE PAGAMENTO (DIAS) *</label>
+                                <input type="number" class="form-control form-control-sm border-light-subtle" name="prazo_pagamento" id="prazo_pagamento_input" placeholder="Ex: 28" required>
+                                <div class="form-text text-danger" style="font-size: 0.65rem;">* Obrigatório definir o prazo para prosseguir.</div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label text-muted small fw-bold">OBSERVAÇÕES PARA O FORNECEDOR</label>
+                                <textarea class="form-control form-control-sm border-light-subtle" name="observacoes" rows="3" placeholder="Ex: Entregar em horário comercial, NF acompanhando material..."></textarea>
+                            </div>
+                        </div>
+
+                        <div class="col-md-5">
+                            <label class="form-label text-muted small fw-bold">ITENS SELECIONADOS *</label>
+                            <div id="itensParaCotacaoList" class="border rounded p-2 bg-light-subtle" style="max-height: 380px; overflow-y: auto;">
+                                <p class="text-muted text-center py-5 small italic">Carregando itens da solicitação...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer bg-light border-0 py-3">
+                    <button type="button" class="btn btn-secondary btn-sm px-3" data-bs-dismiss="modal">CANCELAR</button>
+                    <button type="submit" class="btn btn-primary btn-sm px-4 fw-bold shadow-sm">ENVIAR COTAÇÃO <i class="fas fa-paper-plane ms-1"></i></button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalDisparoIndividual" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-md modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header bg-primary text-white border-0 py-3">
+                <h6 class="modal-title fw-normal"><i class="fas fa-paper-plane me-2"></i>Gerenciar Envio de Convites</h6>
+            </div>
+            <div class="modal-body p-0">
+                <div class="p-3 bg-light border-bottom">
+                    <p class="text-muted mb-0 small">Escolha como cada fornecedor deve receber a cotação:</p>
+                </div>
+                <div id="listaDisparoFornecedores" class="list-group list-group-flush"></div>
+            </div>
+            <div class="modal-footer bg-light border-0 py-3">
+                <button type="button" id="btnConcluirTudo" class="btn btn-success btn-sm w-100 py-2 fw-bold shadow-sm" disabled>
+                    <i class="fas fa-check-double me-2"></i>CONCLUIR E FINALIZAR COTAÇÃO
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal de Confirmação de Divergências -->
+<div class="modal fade" id="modalDivergencia" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content shadow-lg border-0">
-            <div class="modal-header bg-danger text-white">
-                <h5 class="modal-title"><i class="fas fa-trash-alt me-2"></i> Confirmar Exclusão</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-header bg-warning text-dark border-0">
+                <h5 class="modal-title"><i class="fas fa-exclamation-triangle me-2"></i>Atenção: Proposta com Diferenças</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body p-4 text-center">
-                <div class="mb-3"><i class="fas fa-exclamation-circle fa-4x text-danger opacity-25"></i></div>
-                <h5 class="mb-2">Tem certeza?</h5>
-                <p class="text-muted mb-0" id="mensagemExclusao">Deseja continuar com a exclusão?</p>
+            <div class="modal-body">
+                <div class="alert alert-warning mb-3">
+                    <i class="fas fa-info-circle me-2"></i>
+                    Esta cotação <strong>não atende exatamente</strong> o que foi solicitado. 
+                    Por favor, revise as diferenças abaixo e forneça uma justificativa para aprovar.
+                </div>
+
+                <!-- Tabela de Comparação -->
+                <div class="table-responsive mb-4">
+                    <table class="table table-bordered table-sm">
+                        <thead class="table-light">
+                            <tr>
+                                <th width="25%">ITEM</th>
+                                <th width="35%">O QUE VOCÊ PEDIU</th>
+                                <th width="40%">O QUE O FORNECEDOR OFERECE</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tabelaComparacaoDivergencias">
+                            <!-- Preenchido dinamicamente via JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Justificativa Obrigatória -->
+                <div class="mb-3">
+                    <label class="form-label fw-bold text-danger">
+                        <i class="fas fa-pen me-2"></i>JUSTIFICATIVA (Obrigatória) *
+                    </label>
+                    <textarea id="justificativaDivergencia" class="form-control" rows="4" 
+                              placeholder="Por favor, explique detalhadamente por que está aprovando esta cotação mesmo com as diferenças identificadas. Ex: Prazo é aceitável pois há estoque, pagamento negociado é vantajoso, etc."
+                              required></textarea>
+                    <small class="form-text text-muted">Este texto ficará registrado no sistema para auditoria futura.</small>
+                </div>
+
+                <!-- Senha de Confirmação -->
+                <div class="mb-3">
+                    <label class="form-label fw-bold text-danger">
+                        <i class="fas fa-lock me-2"></i>CONFIRME SUA SENHA PARA APROVAR *
+                    </label>
+                    <input type="password" id="senhaDivergencia" class="form-control" 
+                           placeholder="Digite sua senha de acesso ao sistema"
+                           required>
+                    <small class="form-text text-muted">Por segurança, aprovações de cotações divergentes requerem senha.</small>
+                </div>
+
+                <div id="erroDivergencia" class="alert alert-danger d-none"></div>
             </div>
-            <div class="modal-footer border-0 bg-light d-flex justify-content-center">
-                <button type="button" class="btn btn-secondary px-4" data-bs-dismiss="modal">Cancelar</button>
-                <button type="button" class="btn btn-danger px-4" id="btnConfirmarExclusaoFinal">Sim, Excluir</button>
+            <div class="modal-footer bg-light">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">CANCELAR</button>
+                <button type="button" id="btnConfirmarDivergencia" class="btn btn-warning fw-bold px-4">
+                    <i class="fas fa-check me-2"></i>CONFIRMAR E APROVAR
+                </button>
             </div>
         </div>
     </div>
@@ -311,111 +575,473 @@
 <div class="modal fade" id="confirmarVencedorModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content shadow border-0">
-            <div class="modal-header bg-success text-white">
-                <h5 class="modal-title"><i class="fas fa-file-invoice"></i> Gerar RM</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            <div class="modal-header bg-success text-white border-0 py-2">
+                <h6 class="modal-title small"><i class="fas fa-file-invoice"></i> Gerar Requisição de Material (RM)</h6>
             </div>
-            <div class="modal-body" id="confirmarVencedorBody">
-                <div class="text-center p-4">
-                    <div class="spinner-border text-success mb-2" role="status"></div>
-                    <p>Buscando dados atualizados...</p>
+            <form id="formConfirmarVencedor" method="post">
+                {% csrf_token %}
+                <div class="modal-body" id="confirmarVencedorBody"></div>
+                <div class="modal-footer bg-light border-0">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">CANCELAR</button>
+                    <button type="submit" class="btn btn-success btn-sm px-4 fw-bold">GERAR RM OFICIAL</button>
                 </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="modalConfirmarExclusao" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow-lg border-0">
+            <div class="modal-header bg-danger text-white border-0 py-2">
+                <h6 class="modal-title"><i class="fas fa-trash-alt me-2"></i>Atenção: Ação Crítica</h6>
             </div>
-            <div class="modal-footer border-0">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                <form id="formConfirmarVencedor" method="post" style="display: inline;">
-                    {% csrf_token %}
-                    <button type="submit" class="btn btn-success px-4">Confirmar e Gerar RM</button>
-                </form>
+            <div class="modal-body p-4 text-center">
+                <i class="fas fa-exclamation-triangle fa-3x text-danger mb-3 opacity-50"></i>
+                <h5 class="mb-2 fw-normal">Confirmar Exclusão?</h5>
+                <p class="text-muted small mb-0" id="mensagemExclusao"></p>
+            </div>
+            <div class="modal-footer border-0 bg-light d-flex justify-content-center py-3">
+                <button type="button" class="btn btn-secondary btn-sm px-4" data-bs-dismiss="modal">CANCELAR</button>
+                <button type="button" class="btn btn-danger btn-sm px-4 fw-bold shadow-sm" id="btnConfirmarExclusaoFinal">SIM, EXCLUIR DEFINITIVAMENTE</button>
             </div>
         </div>
     </div>
 </div>
+
+<form id="rejectForm" method="post" style="display: none;">{% csrf_token %}<input type="hidden" name="motivo" id="rejectMotivo"></form>
+
 {% endblock %}
 
 {% block javascript %}
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-    const summaryLinks = document.querySelectorAll('.summary-link');
-    summaryLinks.forEach(link => {
-        link.addEventListener('click', function(event) {
-            summaryLinks.forEach(l => l.classList.remove('active'));
-            event.currentTarget.classList.add('active');
-        });
+$(function() {
+    let dadosPreparados = {};
+    let statusDisparos = {};
+    let scIdAtual = null;
+
+    // 1. LÓGICA DE AUDITORIA (RESTAURADA: FECHAR POPUPS AO CLICAR FORA)
+    document.addEventListener('click', function(event) {
+        const isClickInside = event.target.closest('.audit-container');
+        if (!isClickInside) {
+            document.querySelectorAll('.audit-popup.show').forEach(function(openPopup) {
+                const collapseInstance = bootstrap.Collapse.getInstance(openPopup);
+                if (collapseInstance) { collapseInstance.hide(); }
+            });
+        }
     });
 
+    // 2. LÓGICA DE NAVEGAÇÃO DE TABS (RESTAURADA E CORRIGIDA)
+    $('.summary-link').on('click', function(e) {
+        e.preventDefault();
+        $('.summary-link').removeClass('active');
+        $(this).addClass('active');
+        const target = $(this).attr('href');
+        $('.tab-pane').removeClass('show active');
+        $(target).addClass('show active');
+    });
+
+    // Manter aba ativa ao recarregar (Original restaurado)
     const urlParams = new URLSearchParams(window.location.search);
     const tabParam = urlParams.get('tab');
     if (tabParam) {
         const tabTrigger = document.querySelector(`.nav a[href="#${tabParam}"]`);
-        if (tabTrigger) {
-            bootstrap.Tab.getOrCreateInstance(tabTrigger).show();
-            document.querySelectorAll('.summary-link').forEach(l => l.classList.remove('active'));
-            tabTrigger.closest('.summary-link').classList.add('active');
+        if (tabTrigger) { 
+            bootstrap.Tab.getOrCreateInstance(tabTrigger).show(); 
+            $('.summary-link').removeClass('active');
+            $(tabTrigger).addClass('active');
         }
     }
 
+    // 3. CORREÇÃO SELECT2 (DROPDOWN PARENT FIX)
+    function initSelect2() {
+        $('#fornecedorSelect').select2({ 
+            placeholder: "Pesquisar Fornecedores...", 
+            dropdownParent: $('#solicitarCotacaoModal'),
+            width: '100%',
+            ajax: { 
+                url: "{% url 'materiais:api_buscar_fornecedores' %}", 
+                dataType: 'json', delay: 250,
+                data: params => ({ term: params.term }),
+                processResults: data => ({ results: data })
+            } 
+        });
+        
+        // Detecta mudança na seleção de fornecedores e verifica envios anteriores
+        $('#fornecedorSelect').on('change', function() {
+            const fornecedoresSelecionados = $(this).val();
+            
+            // Atualiza contador
+            const count = fornecedoresSelecionados ? fornecedoresSelecionados.length : 0;
+            $('#fornecedorCounter').text(count === 0 ? 'Nenhum fornecedor selecionado' : 
+                                        `${count} fornecedor${count > 1 ? 'es' : ''} selecionado${count > 1 ? 's' : ''}`);
+            
+            if (!fornecedoresSelecionados || fornecedoresSelecionados.length === 0) {
+                $('#alertaEnviosAnteriores').remove();
+                return;
+            }
+            
+            // Verifica cada fornecedor selecionado
+            let temEnviosAnteriores = false;
+            let condicoesReferencia = null;
+            
+            fornecedoresSelecionados.forEach(fId => {
+                fetch(`/api/verificar-envios-anteriores/${scIdAtual}/?fornecedor_id=${fId}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success && data.tem_envio_anterior) {
+                            temEnviosAnteriores = true;
+                            if (!condicoesReferencia) {
+                                condicoesReferencia = data.condicoes;
+                                // Preenche automaticamente os campos com as condições anteriores
+                                $('select[name="forma_pagamento"]').val(data.condicoes.forma_pagamento);
+                                $('input[name="prazo_pagamento"]').val(data.condicoes.prazo_pagamento);
+                                
+                                // Mostra alerta informativo
+                                $('#alertaEnviosAnteriores').remove();
+                                const alertHtml = `
+                                    <div id="alertaEnviosAnteriores" class="alert alert-info py-2 px-3 mb-3 small">
+                                        <i class="fas fa-info-circle me-1"></i><strong>Atenção:</strong> 
+                                        Um ou mais fornecedores selecionados já receberam cotação anterior desta SC.
+                                        <br><strong>Condições utilizadas anteriormente:</strong>
+                                        <br>• Pagamento: ${data.condicoes.forma_pagamento_display} em ${data.condicoes.prazo_pagamento} dias
+                                        <br>• Enviado em: ${data.condicoes.data_envio}
+                                        <br><br><span class="text-warning"><i class="fas fa-exclamation-triangle me-1"></i>
+                                        Os campos foram preenchidos automaticamente com as mesmas condições. 
+                                        <strong>Não altere</strong> estes valores para evitar bloqueio de envio!</span>
+                                    </div>
+                                `;
+                                $('.modal-body .row').before(alertHtml);
+                            }
+                        }
+                    });
+            });
+        });
+    }
+
     const solicitarCotacaoModal = document.getElementById('solicitarCotacaoModal');
-    if (solicitarCotacaoModal) {
-        const fornecedorSelect = $('#fornecedorSelect');
-        const formCotacao = document.getElementById('formSolicitarCotacao');
-        fornecedorSelect.select2({ placeholder: "Pesquisar Fornecedores...", dropdownParent: solicitarCotacaoModal, ajax: { url: "{% url 'materiais:api_buscar_fornecedores' %}", dataType: 'json', delay: 250, data: params => ({ term: params.term }), processResults: data => ({ results: data }), } });
-        solicitarCotacaoModal.addEventListener('show.bs.modal', function(event) {
-            const scId = event.relatedTarget.getAttribute('data-sc-id');
-            const scName = event.relatedTarget.getAttribute('data-sc-name');
-            formCotacao.action = `/solicitacao/${scId}/enviar-cotacao/`;
-            document.getElementById('solicitarCotacaoModalLabel').textContent = `Solicitar Cotação: ${scName}`;
-            fetch(`/api/solicitacao-itens/${scId}/`).then(res => res.json()).then(data => {
-                const listDiv = document.getElementById('itensParaCotacaoList');
-                if (data.success) {
-                    let html = '<div class="list-group list-group-flush border rounded mb-3 shadow-sm">';
-                    data.itens.forEach(item => { html += `<label class="list-group-item d-flex align-items-center"><input class="form-check-input me-3" type="checkbox" name="itens_cotacao" value="${item.id}" checked><div><div class="fw-bold">${item.descricao}</div><div class="small text-muted">${item.quantidade} ${item.unidade}</div></div></label>`; });
-                    listDiv.innerHTML = html + '</div>';
+    solicitarCotacaoModal.addEventListener('show.bs.modal', function(event) {
+        scIdAtual = event.relatedTarget.getAttribute('data-sc-id');
+        const scName = event.relatedTarget.getAttribute('data-sc-name');
+        $('#sc_name_display').text(scName);
+        $('#prazo_pagamento_input').val('');
+        
+        if ($('#fornecedorSelect').hasClass("select2-hidden-accessible")) {
+            $('#fornecedorSelect').select2('destroy');
+        }
+        setTimeout(initSelect2, 200);
+
+        fetch(`/api/solicitacao-itens/${scIdAtual}/`).then(res => res.json()).then(data => {
+            const listDiv = $('#itensParaCotacaoList');
+            if (data.success) {
+                const temItensEnviados = data.itens.some(item => item.ja_enviado);
+                let html = '';
+                
+                // Alerta se houver itens já enviados
+                if (temItensEnviados) {
+                    html += `<div class="alert alert-info py-2 px-3 mb-2 small">
+                        <i class="fas fa-info-circle me-1"></i><strong>Atenção:</strong> Alguns itens já foram enviados anteriormente. 
+                        Itens marcados em <span class="badge bg-success">VERDE</span> já estão em cotação.
+                    </div>`;
                 }
-            });
+                
+                html += '<div class="list-group list-group-flush small shadow-sm border rounded">';
+                data.itens.forEach(item => {
+                    const jaEnviadoClass = item.ja_enviado ? 'bg-success-subtle border-success' : '';
+                    const jaEnviadoBadge = item.ja_enviado ? '<span class="badge bg-success ms-2" style="font-size:0.6rem">JÁ ENVIADO</span>' : '';
+                    const checked = item.ja_enviado ? '' : 'checked';  // Por padrão, marcar apenas os não enviados
+                    
+                    html += `<label class="list-group-item d-flex align-items-center ${jaEnviadoClass}">
+                        <input class="form-check-input me-3" type="checkbox" name="itens_cotacao" value="${item.id}" ${checked}>
+                        <div class="flex-grow-1">
+                            <div class="text-dark fw-bold">${item.descricao}${jaEnviadoBadge}</div>
+                            <div class="text-muted" style="font-size:0.7rem">${item.quantidade} ${item.unidade}</div>
+                        </div>
+                    </label>`;
+                });
+                listDiv.html(html + '</div>');
+            }
         });
-    }
+    });
 
+    // 4. TRANSIÇÃO PARA MODAL 2 E DISPARO COM CONTINGÊNCIA
+    $('#formPrepararCotacao').on('submit', function(e) {
+        e.preventDefault();
+        const fSelect = $('#fornecedorSelect').select2('data');
+        if (fSelect.length === 0) return alert("Selecione ao menos um fornecedor.");
+
+        // Validação: verificar se há pelo menos um item selecionado
+        const itensSelecionados = $('input[name="itens_cotacao"]:checked');
+        if (itensSelecionados.length === 0) {
+            alert("Selecione pelo menos um item para enviar aos fornecedores.");
+            return;
+        }
+
+        dadosPreparados = {
+            sc_id: scIdAtual,
+            prazo_resposta: $('input[name="prazo_resposta"]').val(),
+            forma_pagamento: $('select[name="forma_pagamento"]').val(),
+            prazo_pagamento: $('input[name="prazo_pagamento"]').val(),
+            observacoes: $('textarea[name="observacoes"]').val(),
+            itens: $('input[name="itens_cotacao"]:checked').map(function() { return $(this).val(); }).get(),
+            fornecedores: fSelect.map(f => ({ id: f.id, nome: f.text }))
+        };
+
+        $('#listaDisparoFornecedores').empty();
+        statusDisparos = {};
+        dadosPreparados.fornecedores.forEach(f => {
+            statusDisparos[f.id] = false;
+            $('#listaDisparoFornecedores').append(`
+                <div class="list-group-item disparo-item p-3 d-flex justify-content-between align-items-center" id="row-f-${f.id}">
+                    <div><span class="d-block small fw-bold text-dark text-uppercase">${f.nome}</span><span class="badge bg-secondary-subtle text-secondary fw-normal" id="status-f-${f.id}" style="font-size:0.65rem">PENDENTE</span></div>
+                    <div class="btn-group" id="actions-f-${f.id}">
+                        <button type="button" class="btn btn-xs btn-outline-primary" onclick="dispararIndividual('${f.id}', 'auto')">AUTO</button>
+                        <button type="button" class="btn btn-xs btn-outline-dark" onclick="dispararIndividual('${f.id}', 'manual')">MANUAL</button>
+                    </div>
+                </div>
+            `);
+        });
+
+        $('#solicitarCotacaoModal').modal('hide');
+        $('#modalDisparoIndividual').modal('show');
+    });
+
+    window.dispararIndividual = function(fId, tipo) {
+        const btnGroup = $(`#actions-f-${fId}`);
+        const rowStatus = $(`#status-f-${fId}`);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000); // Aumentado para 20 segundos
+
+        btnGroup.html('<span class="spinner-border spinner-border-sm text-primary"></span>');
+
+        const fd = new FormData();
+        fd.append('fornecedor', fId); fd.append('tipo_envio', tipo);
+        fd.append('forma_pagamento', dadosPreparados.forma_pagamento);
+        fd.append('prazo_pagamento', dadosPreparados.prazo_pagamento);
+        fd.append('observacoes', dadosPreparados.observacoes);
+        dadosPreparados.itens.forEach(id => fd.append('itens_cotacao', id));
+        fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
+
+        fetch(`/solicitacao/${dadosPreparados.sc_id}/enviar-cotacao/`, { method: 'POST', body: fd, signal: controller.signal })
+        .then(res => { clearTimeout(timeoutId); return res.json(); })
+        .then(data => {
+            if (data.success) {
+                statusDisparos[fId] = true;
+                $(`#row-f-${fId}`).addClass('ready');
+                rowStatus.removeClass('bg-secondary-subtle text-secondary').addClass('bg-success-subtle text-success').text(tipo === 'auto' ? 'ENVIADO AUTO' : 'TEXTO GERADO');
+                btnGroup.html('<i class="fas fa-check text-success"></i>');
+                if (tipo === 'manual') window.open(data.url_confirmacao, '_blank');
+                if (Object.values(statusDisparos).every(s => s === true)) $('#btnConcluirTudo').prop('disabled', false);
+            } else { throw new Error(data.message); }
+        })
+        .catch(err => {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') {
+                rowStatus.removeClass('bg-secondary-subtle text-secondary').addClass('bg-danger-subtle text-danger').text('ERRO: TIMEOUT');
+            } else if (err.message && err.message.includes('BLOQUEIO')) {
+                // Erro de conflito de condições comerciais - mostra alerta detalhado
+                rowStatus.removeClass('bg-secondary-subtle text-secondary').addClass('bg-warning-subtle text-warning').text('BLOQUEADO');
+                alert(err.message);
+                btnGroup.html('<span class="text-danger small"><i class="fas fa-ban me-1"></i>Bloqueado</span>');
+            } else {
+                rowStatus.removeClass('bg-secondary-subtle text-secondary').addClass('bg-danger-subtle text-danger').text('ERRO NO ENVIO');
+            }
+            if (rowStatus.text() === 'ERRO: TIMEOUT' || (rowStatus.text() === 'ERRO NO ENVIO' && !err.message.includes('BLOQUEIO'))) {
+                btnGroup.html(`<button class="btn btn-xs btn-warning fw-bold shadow-sm border-2" style="background-color: #ffc107; color: #000; border-color: #ffca2c;" onclick="dispararIndividual('${fId}', 'manual')"><i class="fas fa-sync me-1"></i> USAR MANUAL</button>`);
+            }
+        });
+    };
+
+    $('#btnConcluirTudo').click(() => location.reload());
+
+    // 5. MODAL VENCEDOR INTEGRAL
     const confirmarVencedorModal = document.getElementById('confirmarVencedorModal');
-    if(confirmarVencedorModal) {
-        confirmarVencedorModal.addEventListener('show.bs.modal', function(event) {
-            const button = event.relatedTarget;
-            const cotacaoId = button.getAttribute('data-cotacao-id');
-            const modalBody = document.getElementById('confirmarVencedorBody');
-            document.getElementById('formConfirmarVencedor').action = `/cotacao/${cotacaoId}/selecionar/`;
-            fetch(`/api/dados-confirmacao-rm/${cotacaoId}/`).then(r => r.json()).then(data => {
-                modalBody.innerHTML = `<div class="p-2"><p>Confirma gerar RM para <b>${data.vencedora.fornecedor}</b>?</p></div>`;
+    // Variáveis globais para gerenciar divergências
+    let cotacaoAtualId = null;
+    let dadosCotacaoAtual = null;
+
+    // Handler para botões de selecionar vencedora
+    $(document).on('click', '.btn-selecionar-vencedora', function() {
+        cotacaoAtualId = $(this).data('cotacao-id');
+        
+        // Busca dados da cotação ANTES de abrir qualquer modal
+        fetch(`/api/dados-confirmacao-rm/${cotacaoAtualId}/`)
+            .then(r => r.json())
+            .then(data => {
+                dadosCotacaoAtual = data;
+                
+                // Decide qual modal abrir baseado na conformidade
+                if (data.conformidade !== 'verde') {
+                    // Se houver divergência, abre APENAS o modal de divergência
+                    abrirModalDivergencia(cotacaoAtualId, data);
+                } else {
+                    // Se não houver divergência, abre o modal padrão
+                    const modalBody = $('#confirmarVencedorBody');
+                    $('#formConfirmarVencedor').attr('action', `/cotacao/${cotacaoAtualId}/selecionar/`);
+                    
+                    modalBody.html(`
+                        <div class="bg-light p-3 rounded border small mb-2">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Fornecedor:</span> <strong>${data.vencedora.fornecedor}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Total:</span> <strong class="text-success">R$ ${data.vencedora.valor_total}</strong>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Condições:</span> <strong>${data.vencedora.prazo} / ${data.vencedora.pagamento}</strong>
+                            </div>
+                        </div>
+                    `);
+                    
+                    // Abre o modal de confirmação padrão
+                    new bootstrap.Modal(document.getElementById('confirmarVencedorModal')).show();
+                }
+            })
+            .catch(error => {
+                console.error('Erro ao buscar dados da cotação:', error);
+                alert('Erro ao carregar dados da cotação. Tente novamente.');
             });
+    });
+
+    // Função para abrir modal de divergência com dados detalhados
+    function abrirModalDivergencia(cotacaoId, dados) {
+        const tabelaComparacao = $('#tabelaComparacaoDivergencias');
+        let linhasTabela = '';
+
+        // Compara Prazo de Entrega
+        const prazoSolicitado = dados.solicitado?.prazo || 'Prazo flexível';
+        const prazoOfertado = dados.vencedora?.prazo || 'Não informado';
+        const prazoStatus = prazoOfertado === 'Atende' || prazoOfertado === prazoSolicitado ? 
+            '<span class="badge bg-success">OK</span>' : 
+            '<span class="badge bg-danger">DIFERENTE</span>';
+        
+        linhasTabela += `
+            <tr>
+                <td class="fw-bold"><i class="fas fa-calendar-check me-2 text-muted"></i>Prazo de Entrega</td>
+                <td>${prazoSolicitado}</td>
+                <td>${prazoOfertado} ${prazoStatus}</td>
+            </tr>
+        `;
+
+        // Compara Forma de Pagamento
+        const pagtoSolicitado = dados.solicitado?.pagamento || 'Não definido';
+        const pagtoOfertado = dados.vencedora?.pagamento || 'Não informado';
+        const pagtoStatus = pagtoOfertado === 'Atende' || pagtoOfertado === pagtoSolicitado ? 
+            '<span class="badge bg-success">OK</span>' : 
+            '<span class="badge bg-warning">DIFERENTE</span>';
+        
+        linhasTabela += `
+            <tr>
+                <td class="fw-bold"><i class="fas fa-credit-card me-2 text-muted"></i>Pagamento</td>
+                <td>${pagtoSolicitado}</td>
+                <td>${pagtoOfertado} ${pagtoStatus}</td>
+            </tr>
+        `;
+
+        // Compara Local de Entrega
+        const localSolicitado = dados.solicitado?.local || 'Não especificado';
+        const localOfertado = dados.vencedora?.local || 'Não informado';
+        const localStatus = localOfertado === localSolicitado ? 
+            '<span class="badge bg-success">OK</span>' : 
+            '<span class="badge bg-danger">DIFERENTE</span>';
+        
+        linhasTabela += `
+            <tr>
+                <td class="fw-bold"><i class="fas fa-map-marker-alt me-2 text-muted"></i>Local de Entrega</td>
+                <td>${localSolicitado}</td>
+                <td>${localOfertado} ${localStatus}</td>
+            </tr>
+        `;
+
+        tabelaComparacao.html(linhasTabela);
+        
+        // Limpa campos anteriores
+        $('#justificativaDivergencia').val('');
+        $('#senhaDivergencia').val('');
+        $('#erroDivergencia').addClass('d-none');
+
+        // Abre o modal
+        new bootstrap.Modal(document.getElementById('modalDivergencia')).show();
+    }
+
+    // Handler para confirmar divergência com senha
+    $('#btnConfirmarDivergencia').click(function() {
+        const justificativa = $('#justificativaDivergencia').val().trim();
+        const senha = $('#senhaDivergencia').val().trim();
+        const erroDiv = $('#erroDivergencia');
+
+        // Validações
+        if (!justificativa || justificativa.length < 5) {
+            erroDiv.removeClass('d-none').text('Por favor, forneça uma justificativa detalhada (mínimo 5 caracteres).');
+            return;
+        }
+
+        if (!senha) {
+            erroDiv.removeClass('d-none').text('A senha é obrigatória para aprovar cotações divergentes.');
+            return;
+        }
+
+        // Desabilita botão durante validação
+        $(this).prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2"></span>Validando...');
+
+        // Valida senha via API
+        fetch('/api/validar-senha/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': '{{ csrf_token }}'
+            },
+            body: JSON.stringify({ senha: senha })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Senha correta - submete formulário principal com justificativa
+                const form = $('#formConfirmarVencedor');
+                
+                // CRÍTICO: Define o action do formulário antes de submeter
+                form.attr('action', `/cotacao/${cotacaoAtualId}/selecionar/`);
+                
+                // Adiciona campo oculto com justificativa
+                form.append(`<input type="hidden" name="justificativa_diretoria" value="${justificativa}">`);
+                
+                // Fecha modal de divergência
+                bootstrap.Modal.getInstance(document.getElementById('modalDivergencia')).hide();
+                
+                // Submete o formulário
+                form.submit();
+            } else {
+                // Senha incorreta
+                erroDiv.removeClass('d-none').text('Senha incorreta. Por favor, tente novamente.');
+                $('#btnConfirmarDivergencia').prop('disabled', false).html('<i class="fas fa-check me-2"></i>CONFIRMAR E APROVAR');
+            }
+        })
+        .catch(error => {
+            erroDiv.removeClass('d-none').text('Erro ao validar senha. Tente novamente.');
+            $('#btnConfirmarDivergencia').prop('disabled', false).html('<i class="fas fa-check me-2"></i>CONFIRMAR E APROVAR');
         });
-    }
-});
+    });
 
-function abrirModalRejeicao(scId, scName) {
-    const motivo = prompt(`Informe o motivo para rejeitar a SC "${scName}":`);
-    if (motivo) {
-        const form = document.createElement('form'); form.method = 'POST'; form.action = `/solicitacao/${scId}/rejeitar-escritorio/`;
-        const csrf = document.createElement('input'); csrf.type = 'hidden'; csrf.name = 'csrfmiddlewaretoken'; csrf.value = '{{ csrf_token }}';
-        const inputMotivo = document.createElement('input'); inputMotivo.type = 'hidden'; inputMotivo.name = 'motivo'; inputMotivo.value = motivo;
-        form.appendChild(csrf); form.appendChild(inputMotivo); document.body.appendChild(form); form.submit();
-    }
-}
+    // 6. EXCLUSÃO E REJEIÇÃO (ORIGINAIS RESTAURADOS)
+    window.abrirModalRejeicao = function(scId, scName) {
+        const motivo = prompt(`Informe o motivo para rejeitar a SC "${scName}":`);
+        if (motivo) {
+            const form = document.getElementById('rejectForm');
+            form.action = `/solicitacao/${scId}/rejeitar-escritorio/`;
+            document.getElementById('rejectMotivo').value = motivo;
+            form.submit();
+        }
+    };
 
-let formExclusaoPendente = null;
-function abrirModalExclusao(btn, tipo) {
-    formExclusaoPendente = btn.closest('form');
-    const mensagem = document.getElementById('mensagemExclusao');
-    if (tipo === 'fornecedor') { mensagem.textContent = "Remover este fornecedor da lista de convites?"; } 
-    else { mensagem.textContent = "Excluir definitivamente esta cotação recebida?"; }
-    const modal = new bootstrap.Modal(document.getElementById('modalConfirmarExclusao'));
-    modal.show();
-}
-
-document.getElementById('btnConfirmarExclusaoFinal').addEventListener('click', function() {
-    if (formExclusaoPendente) {
-        this.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Excluindo...';
-        this.disabled = true;
-        formExclusaoPendente.submit();
-    }
+    let formExcluir = null;
+    window.abrirModalExclusao = (btn, tipo) => {
+        formExcluir = btn.closest('form');
+        const msg = (tipo === 'fornecedor') ? "Tem certeza que deseja cancelar este convite? O fornecedor perderá o acesso imediato ao portal e será necessário gerar um novo convite manual ou automático caso mude de ideia." : "Esta ação é irreversível. Ao excluir esta cotação, todos os preços registrados, orçamentos e o histórico de negociação deste fornecedor serão apagados permanentemente.";
+        $('#mensagemExclusao').text(msg);
+        new bootstrap.Modal(document.getElementById('modalConfirmarExclusao')).show();
+    };
+    $('#btnConfirmarExclusaoFinal').click(() => { if (formExcluir) { $('#btnConfirmarExclusaoFinal').prop('disabled', true); formExcluir.submit(); } });
 });
 </script>
 {% endblock %}

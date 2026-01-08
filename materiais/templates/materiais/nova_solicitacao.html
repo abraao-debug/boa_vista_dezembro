@@ -71,8 +71,16 @@
                             <input type="date" class="form-control" id="data_necessidade" name="data_necessidade" required>
                         </div>
                         <div class="col-md-6 mb-3">
-                            <label for="destino" class="form-label">Destino de Entrega</label>
-                            <select class="form-select" id="destino" name="destino"><option value="">Mesmo endereço da obra</option>{% for destino in destinos_entrega %}<option value="{{ destino.id }}">{{ destino.nome }}</option>{% endfor %}</select>
+                            <label for="destino" class="form-label">Entrega em outra Obra? (Opcional)</label>
+                            <select class="form-select" id="destino" name="destino">
+                                <option value="" selected>Mesma obra selecionada acima</option>
+                                {% for obra_dest in obras %}
+                                <option value="{{ obra_dest.id }}">{{ obra_dest.nome }}{% if obra_dest.endereco %} - {{ obra_dest.endereco }}{% endif %}</option>
+                                {% endfor %}
+                            </select>
+                            <div class="form-text" style="font-size: 0.75rem;">
+                                <i class="fas fa-info-circle me-1"></i>Deixe vazio para entregar na obra de origem
+                            </div>
                         </div>
                     </div>
                     <div class="mb-3"><label for="justificativa" class="form-label">Observação Geral</label><textarea class="form-control" id="justificativa" name="justificativa" rows="3"></textarea></div>

@@ -138,3 +138,16 @@ LOGOUT_REDIRECT_URL = 'materiais:login'
 
 AUTH_USER_MODEL = 'materiais.User'
 X_FRAME_OPTIONS = 'SAMEORIGIN'
+
+# CONFIGURAÇÃO DE E-MAIL (SMTP)
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+
+# Credenciais (Recomenda-se usar variáveis de ambiente para segurança)
+EMAIL_HOST_USER = 'abraaolmsousa@gmail.com' 
+EMAIL_HOST_PASSWORD = 'beyx vscw yvfr ceoj' # Não é a senha comum, veja o passo abaixo
+
+# Endereço que aparecerá como remetente nos e-mails
+DEFAULT_FROM_EMAIL = 'Sistema de Compras Boa Vista <seu-email@gmail.com>'

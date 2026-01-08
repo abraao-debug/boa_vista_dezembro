@@ -194,6 +194,18 @@ class CategoriaItemAdmin(admin.ModelAdmin):
 
 @admin.register(DestinoEntrega)
 class DestinoEntregaAdmin(admin.ModelAdmin):
-    list_display = ['nome']
-    search_fields = ['nome']
+    list_display = ['nome', 'obra', 'endereco']
+    list_filter = ['obra']
+    search_fields = ['nome', 'endereco', 'obra__nome']
+    autocomplete_fields = ['obra']
+    
+    fieldsets = (
+        ('Identificação', {
+            'fields': ('obra', 'nome')
+        }),
+        ('Endereço', {
+            'fields': ('endereco',),
+            'description': 'Preencha o endereço completo se for diferente do endereço da obra'
+        }),
+    )
 

@@ -1,0 +1,154 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Confirmar Envios de Cotação{% endblock %}
+
+{% block content %}
+<style>
+    /* Estilos seguindo o padrão de dashboard do projeto */
+    .copy-card { transition: all 0.3s ease; border: 1px solid #dee2e6; background-color: #fff; }
+    .copy-card:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.08); border-color: #0d6efd; }
+    .label-mini { font-size: 0.7rem; color: #6c757d; text-transform: uppercase; font-weight: bold; margin-bottom: 0.2rem; }
+    .text-preview { background-color: #fcfcfc; border: 1px solid #e9ecef; border-radius: 6px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; white-space: pre-wrap; font-size: 0.88rem; line-height: 1.5; color: #333; }
+    .whatsapp-btn { background-color: #25d366; color: white; border: none; }
+    .whatsapp-btn:hover { background-color: #1ebe57; color: white; }
+    .toast-custom { position: fixed; bottom: 20px; start: 50%; transform: translateX(-50%); z-index: 9999; background: #333; color: #fff; padding: 10px 25px; border-radius: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: none; }
+</style>
+
+<div class="d-flex align-items-center justify-content-between mb-4">
+    <div class="d-flex align-items-center">
+        <a href="{% url 'materiais:gerenciar_cotacoes' %}?tab=aguardando" class="btn btn-secondary me-3 shadow-sm">
+            <i class="fas fa-arrow-left"></i> Voltar
+        </a>
+        <div>
+            <h4 class="mb-0">Central de Envio Manual</h4>
+            <p class="text-muted mb-0 small">Copie os dados ou chame o fornecedor diretamente no WhatsApp.</p>
+        </div>
+    </div>
+</div>
+
+<div id="copy-toast" class="toast-custom">
+    <i class="fas fa-check-circle text-success me-2"></i> <span id="toast-message">Copiado!</span>
+</div>
+
+<div class="row">
+    {% for envio in envios %}
+    <div class="col-md-6 mb-4">
+        <div class="card h-100 copy-card shadow-sm border-0">
+            <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                <h6 class="mb-0 fw-bold text-dark"><i class="fas fa-store me-2 text-primary"></i>{{ envio.fornecedor.nome_fantasia|upper }}</h6>
+                <span class="badge bg-light text-dark border">SC {{ envio.solicitacao.numero }}</span>
+            </div>
+            
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="label-mini">E-MAIL CADASTRADO</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control form-control-sm bg-light" id="email-{{ envio.id }}" value="{{ envio.fornecedor.email|default:'E-mail não cadastrado' }}" readonly>
+                        <button class="btn btn-outline-primary btn-sm" onclick="copiarParaAreaTransferencia('email-{{ envio.id }}', 'E-mail copiado!')">
+                            <i class="far fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="row g-2 mb-3">
+                    <div class="col-6">
+                        <button class="btn btn-sm whatsapp-btn w-100 fw-bold" onclick="abrirWhatsApp('{{ envio.fornecedor.contato_whatsapp }}', 'text-body-{{ envio.id }}')">
+                            <i class="fab fa-whatsapp me-1"></i> WHATSAPP
+                        </button>
+                    </div>
+                    <div class="col-6">
+                        <button class="btn btn-sm btn-primary w-100 fw-bold" onclick="copiarParaAreaTransferencia('text-body-{{ envio.id }}', 'Mensagem copiada!')">
+                            <i class="far fa-file-alt me-1"></i> COPIAR TEXTO
+                        </button>
+                    </div>
+                </div>
+
+                <label class="label-mini">MENSAGEM FORMATADA</label>
+                <div class="text-preview p-3" id="text-body-{{ envio.id }}">Olá, *{{ envio.fornecedor.nome_fantasia }}*!
+
+Estamos solicitando uma cotação para a **SC {{ envio.solicitacao.numero }}**.
+Obra: {{ envio.solicitacao.obra.nome }}
+
+*ITENS SOLICITADOS:*
+{% for item in envio.itens.all %}- {{ item.descricao|upper }} ({{ item.quantidade|floatformat:0 }} {{ item.unidade }})
+{% endfor %}
+*CONDIÇÕES SUGERIDAS:*
+- Pagamento: {{ envio.get_forma_pagamento_display }}
+- Prazo: {{ envio.prazo_pagamento }} dias
+- Entrega em: {{ envio.solicitacao.data_necessidade|date:"d/m/Y" }}
+
+*OBSERVAÇÕES:*
+{{ envio.observacoes|default:"Nenhuma." }}
+
+Por favor, responda com seus melhores preços e prazos através do nosso portal ou por este canal.</div>
+            </div>
+
+            <div class="card-footer bg-white border-top-0 pb-3">
+                <form action="{% url 'materiais:confirmar_envio_manual' envio.id %}" method="post">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-dark btn-sm w-100">
+                        <i class="fas fa-check me-2"></i>CONFIRMAR ENVIO E AVANÇAR
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block javascript %}
+<script>
+    /**
+     * Função para copiar texto (E-mail ou Corpo da Mensagem)
+     */
+    function copiarParaAreaTransferencia(elementId, message) {
+        const element = document.getElementById(elementId);
+        const textToCopy = (element.tagName === 'INPUT') ? element.value : element.innerText;
+
+        navigator.clipboard.writeText(textToCopy).then(() => {
+            mostrarToast(message);
+        }).catch(err => {
+            console.error('Erro ao copiar: ', err);
+        });
+    }
+
+    /**
+     * Abre o WhatsApp com o número formatado no padrão wa.me/55...
+     */
+    function abrirWhatsApp(phone, textId) {
+        if (!phone || phone === 'None' || phone.trim() === '') {
+            alert('Atenção: Este fornecedor não possui número de WhatsApp cadastrado.');
+            return;
+        }
+
+        // Limpa tudo que não for número (parênteses, traços, espaços)
+        let cleanPhone = phone.replace(/\D/g, '');
+
+        // Adiciona prefixo 55 se o número tiver tamanho de DDD + Número (10 ou 11 dígitos)
+        if (cleanPhone.length === 10 || cleanPhone.length === 11) {
+            cleanPhone = '55' + cleanPhone;
+        }
+
+        // Captura e codifica o texto
+        const messageBody = document.getElementById(textId).innerText;
+        const encodedText = encodeURIComponent(messageBody);
+
+        // Abre a URL formatada
+        const url = `https://wa.me/${cleanPhone}?text=${encodedText}`;
+        window.open(url, '_blank');
+    }
+
+    /**
+     * Alerta visual de sucesso
+     */
+    function mostrarToast(message) {
+        const toast = document.getElementById('copy-toast');
+        document.getElementById('toast-message').innerText = message;
+        toast.style.display = 'block';
+        
+        setTimeout(() => {
+            toast.style.display = 'none';
+        }, 2000);
+    }
+</script>
+{% endblock %}

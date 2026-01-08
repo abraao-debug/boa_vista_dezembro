@@ -1,0 +1,104 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Gerenciar Obras{% endblock %}
+
+{% block content %}
+<style>
+    {% include 'materiais/styles_dashboard.css' %}
+    .obra-card { border-left: 4px solid #0d6efd; transition: all 0.2s; }
+    .obra-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.1); transform: translateY(-2px); }
+    .obra-card.inativa { border-left-color: #6c757d; opacity: 0.7; }
+    .destino-badge { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
+</style>
+
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary me-3"><i class="fas fa-arrow-left"></i> Voltar</a>
+    <div class="flex-grow-1">
+        <h4 class="mb-0">Gerenciar Obras</h4>
+        <p class="text-muted mb-0 small">Cadastre e gerencie obras e seus destinos de entrega</p>
+    </div>
+    <a href="{% url 'materiais:cadastrar_obra' %}" class="btn btn-success">
+        <i class="fas fa-plus me-2"></i>Nova Obra
+    </a>
+</div>
+<hr class="mb-4">
+
+<div class="row">
+    {% for obra in obras %}
+    <div class="col-md-6 mb-3">
+        <div class="card obra-card {% if not obra.ativa %}inativa{% endif %}">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div>
+                        <h5 class="mb-1">
+                            {{ obra.nome }}
+                            {% if not obra.ativa %}
+                            <span class="badge bg-secondary ms-2">Inativa</span>
+                            {% else %}
+                            <span class="badge bg-success ms-2">Ativa</span>
+                            {% endif %}
+                        </h5>
+                        <p class="text-muted small mb-0">
+                            <i class="fas fa-map-marker-alt me-1"></i>
+                            {{ obra.endereco|default:"Endereço não cadastrado" }}
+                        </p>
+                    </div>
+                    <a href="{% url 'materiais:editar_obra' obra.id %}" class="btn btn-sm btn-outline-primary">
+                        <i class="fas fa-edit"></i> Editar
+                    </a>
+                </div>
+                
+                <div class="row text-center mt-3 pt-2 border-top">
+                    <div class="col-6">
+                        <small class="text-muted d-block" style="font-size: 0.7rem;">INÍCIO</small>
+                        <strong>{{ obra.data_inicio|date:"d/m/Y"|default:"-" }}</strong>
+                    </div>
+                    <div class="col-6">
+                        <small class="text-muted d-block" style="font-size: 0.7rem;">FIM PREVISTO</small>
+                        <strong>{{ obra.data_fim|date:"d/m/Y"|default:"-" }}</strong>
+                    </div>
+                </div>
+                
+                <div class="mt-3">
+                    <button class="btn btn-sm btn-link p-0 text-muted" type="button" data-bs-toggle="collapse" data-bs-target="#destinos{{ obra.id }}">
+                        <i class="fas fa-map-marked-alt me-1"></i>
+                        Destinos de Entrega ({{ obra.destinos.count }})
+                        <i class="fas fa-chevron-down ms-1"></i>
+                    </button>
+                    <div class="collapse mt-2" id="destinos{{ obra.id }}">
+                        <div class="bg-light p-2 rounded">
+                            {% for destino in obra.destinos.all %}
+                            <div class="d-flex align-items-center justify-content-between py-1">
+                                <div>
+                                    <span class="badge destino-badge {% if destino.nome == obra.nome %}bg-primary{% else %}bg-secondary{% endif %}">
+                                        {% if destino.nome == obra.nome %}
+                                        <i class="fas fa-building me-1"></i>OBRA
+                                        {% else %}
+                                        <i class="fas fa-warehouse me-1"></i>LOCAL
+                                        {% endif %}
+                                    </span>
+                                    <strong class="ms-2">{{ destino.nome }}</strong>
+                                </div>
+                                <small class="text-muted">
+                                    {{ destino.endereco|default:"Mesmo endereço da obra"|truncatewords:6 }}
+                                </small>
+                            </div>
+                            {% empty %}
+                            <small class="text-muted">Nenhum destino cadastrado</small>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% empty %}
+    <div class="col-12">
+        <div class="text-center p-5 text-muted">
+            <i class="fas fa-building fa-3x mb-3 opacity-50"></i>
+            <h5>Nenhuma obra cadastrada</h5>
+            <p>Clique em "Nova Obra" para começar</p>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
