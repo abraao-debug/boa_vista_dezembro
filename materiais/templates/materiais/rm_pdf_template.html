@@ -83,10 +83,10 @@
             </tr>
             <tr>
                 <td class="label">Data de Emissão:</td><td>{{ rm.data_criacao|date:"d/m/Y" }}</td>
-                <td class="label">Data Prevista p/ Entrega:</td><td>{{ rm.cotacao_vencedora.prazo_entrega|default:"__/__/____" }}</td>
+                <td class="label">Data Prevista p/ Entrega:</td><td>{{ prazo_entrega_display }}</td>
             </tr>
              <tr>
-                <td class="label">Condição de Pagamento:</td><td colspan="3">{{ rm.cotacao_vencedora.condicao_pagamento|default:"Não informado" }}</td>
+                <td class="label">Condição de Pagamento:</td><td colspan="3">{{ condicao_pagamento_display }}</td>
             </tr>
             <tr>
                 <td class="label">Solicitante:</td><td colspan="3">{{ solicitacao.solicitante.get_full_name|default:solicitacao.solicitante.username }}</td>

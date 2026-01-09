@@ -47,7 +47,9 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('cotacao/<int:cotacao_id>/selecionar/', views.selecionar_cotacao_vencedora, name='selecionar_cotacao_vencedora'),  
     path('cotacao/<int:cotacao_id>/rejeitar/', views.rejeitar_cotacao, name='rejeitar_cotacao'),  
     path('solicitacao/<int:solicitacao_id>/enviar-cotacao/', views.enviar_cotacao_fornecedor, name='enviar_cotacao_fornecedor'),  
-    path('envio-cotacao/<int:envio_id>/gerar-email/', views.gerar_email_cotacao, name='gerar_email_cotacao'),  
+    path('solicitacao/<int:solicitacao_id>/registrar-remocao-bloqueados/', views.registrar_remocao_fornecedores_bloqueados, name='registrar_remocao_fornecedores_bloqueados'),
+    path('solicitacao/<int:solicitacao_id>/registrar-desfazer-remocao-bloqueados/', views.registrar_desfazer_remocao_fornecedores_bloqueados, name='registrar_desfazer_remocao_fornecedores_bloqueados'),
+
     path('envio-cotacao/<int:envio_id>/confirmar-envio/', views.confirmar_envio_manual, name='confirmar_envio_manual'),  
     path('envio-cotacao/enviar-automatico/', views.enviar_automatico_placeholder, name='enviar_automatico_placeholder'),  
     #path('marcar-em-cotacao/<int:solicitacao_id>/', views.marcar_em_cotacao, name='marcar_em_cotacao'),  
@@ -92,4 +94,19 @@ path('dashboard/', views.dashboard, name='dashboard'),
     
     path('notificacao/lida/<int:notificacao_id>/', views.marcar_notificacao_lida, name='marcar_notificacao_lida'),
     path('fornecedor/pedidos/', views.lista_pedidos_fornecedor, name='lista_pedidos_fornecedor'),
-        ]
+    
+    # === FASE 3: NOVAS ROTAS ===
+    # Dashboard de Métricas
+    path('dashboard/metricas/', views.dashboard_metricas, name='dashboard_metricas'),
+    
+    # Comentários em SCs
+    path('sc/<int:sc_id>/comentarios/', views.listar_comentarios_sc, name='listar_comentarios_sc'),
+    path('sc/<int:sc_id>/comentarios/adicionar/', views.adicionar_comentario_sc, name='adicionar_comentario_sc'),
+    
+    # API Sugestões IA
+    path('api/sc/<int:sc_id>/sugestoes-fornecedores/', views.api_sugestoes_fornecedores, name='api_sugestoes_fornecedores'),
+    
+    # WhatsApp
+    path('api/whatsapp/testar/', views.testar_whatsapp, name='testar_whatsapp'),
+    path('api/solicitacao-meta/<int:solicitacao_id>/', views.api_solicitacao_meta, name='api_solicitacao_meta'),
+]

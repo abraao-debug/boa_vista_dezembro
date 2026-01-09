@@ -36,6 +36,130 @@ from django.core.mail import send_mail
 from django.conf import settings
 
 #solicitacao = SolicitacaoCompra.objects.create(...)cadastrar_itens
+
+# ==================== SISTEMA DE NOTIFICAÇÕES ====================
+def criar_notificacao_sistema(
+    destinatario_perfil=None,
+    destinatario_usuario=None,
+    destinatario_fornecedor=None,
+    titulo="",
+    mensagem="",
+    link="",
+    severidade="INFO"
+):
+    """
+    Cria notificação universal para usuários internos ou fornecedores.
+    
+    Args:
+        destinatario_perfil: String do perfil ('engenheiro', 'diretor', etc.) - notifica TODOS
+        destinatario_usuario: Instância específica de User
+        destinatario_fornecedor: Instância específica de Fornecedor
+        titulo: Título da notificação
+        mensagem: Corpo da mensagem
+        link: URL para redirecionamento
+        severidade: INFO, WARNING, HIGH
+    
+    Exemplos:
+        # Notificar usuário específico:
+        criar_notificacao_sistema(destinatario_usuario=solicitacao.solicitante, 
+                                 titulo="SC Aprovada", mensagem="...", link="/sc/123")
+        
+        # Notificar todos de um perfil:
+        criar_notificacao_sistema(destinatario_perfil='diretor', 
+                                 titulo="RM Gerada", mensagem="...", link="/rm/45")
+        
+        # Notificar fornecedor:
+        criar_notificacao_sistema(destinatario_fornecedor=fornecedor,
+                                 titulo="RM Enviada", mensagem="...", link="/pedidos")
+    """
+    from .models import Notificacao, NotificacaoFornecedor, User
+    
+    # Notifica usuário específico
+    if destinatario_usuario:
+        Notificacao.objects.create(
+            usuario_destino=destinatario_usuario,
+            titulo=titulo,
+            mensagem=mensagem,
+            link=link
+        )
+    
+    # Notifica todos de um perfil
+    elif destinatario_perfil:
+        usuarios = User.objects.filter(perfil=destinatario_perfil, is_active=True)
+        for usuario in usuarios:
+            Notificacao.objects.create(
+                usuario_destino=usuario,
+                titulo=titulo,
+                mensagem=mensagem,
+                link=link
+            )
+    
+    # Notifica fornecedor
+    elif destinatario_fornecedor:
+        NotificacaoFornecedor.objects.create(
+            fornecedor=destinatario_fornecedor,
+            titulo=titulo,
+            mensagem=mensagem,
+            link=link
+        )
+
+
+def notificar_alteracao_prazo(solicitacao, prazo_fornecedor_str, fornecedor_nome, rm_numero=None):
+    """
+    Notifica solicitante quando prazo de entrega é maior que data de necessidade.
+    
+    Args:
+        solicitacao: Instância de SolicitacaoCompra
+        prazo_fornecedor_str: String com data do fornecedor (formato Y-m-d ou d/m/Y)
+        fornecedor_nome: Nome do fornecedor
+        rm_numero: Número da RM gerada (opcional)
+    """
+    from datetime import datetime
+    
+    # Tenta converter string para data
+    prazo_fornecedor = None
+    for formato in ['%Y-%m-%d', '%d/%m/%Y']:
+        try:
+            prazo_fornecedor = datetime.strptime(prazo_fornecedor_str, formato).date()
+            break
+        except (ValueError, TypeError, AttributeError):
+            continue
+    
+    # Se não conseguiu converter ou não há alteração, não notifica
+    if not prazo_fornecedor or not solicitacao.data_necessidade:
+        return
+    
+    if prazo_fornecedor <= solicitacao.data_necessidade:
+        return  # Prazo está OK, não precisa notificar
+    
+    # Calcula diferença em dias
+    diferenca = (prazo_fornecedor - solicitacao.data_necessidade).days
+    
+    # Monta mensagem
+    if rm_numero:
+        mensagem = (
+            f"O fornecedor {fornecedor_nome} gerou a RM {rm_numero} com nova data de entrega: "
+            f"{prazo_fornecedor.strftime('%d/%m/%Y')} (atraso de {diferenca} dia{'s' if diferenca > 1 else ''}). "
+            f"Data original solicitada: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}."
+        )
+    else:
+        mensagem = (
+            f"O fornecedor {fornecedor_nome} informou nova data de entrega: "
+            f"{prazo_fornecedor.strftime('%d/%m/%Y')} (atraso de {diferenca} dia{'s' if diferenca > 1 else ''}). "
+            f"Data original solicitada: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}."
+        )
+    
+    # Cria notificação para o solicitante
+    criar_notificacao_sistema(
+        destinatario_usuario=solicitacao.solicitante,
+        titulo=f"⚠️ Prazo de Entrega Alterado - SC {solicitacao.numero}",
+        mensagem=mensagem,
+        link=reverse('materiais:api_solicitacao_detalhes', args=[solicitacao.id]),
+        severidade="WARNING"
+    )
+
+# ==================== FIM DO SISTEMA DE NOTIFICAÇÕES ====================
+
 def similaridade_texto(a, b):  
     """Calcula similaridade entre dois textos (0 a 1)"""  
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
@@ -248,6 +372,25 @@ def nova_solicitacao(request):
                     solicitacao.save()
                     HistoricoSolicitacao.objects.create(solicitacao=solicitacao, usuario=request.user, acao="Aprovada na Criação")
                 
+                # NOTIFICAÇÕES - FASE 1: SC Criada
+                # Se foi criada pendente (almoxarife obra), notifica diretor
+                if status_inicial == 'pendente_aprovacao':
+                    criar_notificacao_sistema(
+                        destinatario_perfil='diretor',
+                        titulo="Nova SC para Aprovação",
+                        mensagem=f"SC {solicitacao.numero} criada por {request.user.get_full_name() or request.user.username} - Obra: {obra.nome}",
+                        link=reverse('materiais:analisar_solicitacoes')
+                    )
+                
+                # Se foi auto-aprovada (engenheiro/escritório), notifica almoxarife escritório para cotar
+                elif status_inicial == 'aprovada':
+                    criar_notificacao_sistema(
+                        destinatario_perfil='almoxarife_escritorio',
+                        titulo="Nova SC para Cotação",
+                        mensagem=f"SC {solicitacao.numero} criada e aprovada por {request.user.get_full_name() or request.user.username} - Obra: {obra.nome}",
+                        link=reverse('materiais:gerenciar_cotacoes')
+                    )
+                
                 messages.success(request, f'Solicitação {solicitacao.numero} criada com sucesso!')
                 return redirect('materiais:lista_solicitacoes')
 
@@ -311,6 +454,31 @@ def aprovar_solicitacao(request, solicitacao_id):
         detalhes="Todos os itens foram aprovados."
     )
     
+    # NOTIFICAÇÕES - FASE 1
+    # Notifica o solicitante original
+    criar_notificacao_sistema(
+        destinatario_usuario=solicitacao.solicitante,
+        titulo="✅ SC Aprovada!",
+        mensagem=f"Sua SC {solicitacao.numero} foi aprovada por {request.user.get_full_name() or request.user.username}. A cotação será iniciada em breve.",
+        link=reverse('materiais:api_solicitacao_detalhes', args=[solicitacao.id])
+    )
+    
+    # Notifica almoxarife do escritório (para iniciar cotação)
+    criar_notificacao_sistema(
+        destinatario_perfil='almoxarife_escritorio',
+        titulo="SC Aprovada - Iniciar Cotação",
+        mensagem=f"SC {solicitacao.numero} aprovada pelo Eng. {request.user.get_full_name() or request.user.username}. Obra: {solicitacao.obra.nome}. Pronta para iniciar cotação.",
+        link=reverse('materiais:gerenciar_cotacoes')
+    )
+    
+    # Notifica diretor (visibilidade)
+    criar_notificacao_sistema(
+        destinatario_perfil='diretor',
+        titulo="SC Aprovada",
+        mensagem=f"SC {solicitacao.numero} aprovada. Obra: {solicitacao.obra.nome}",
+        link=reverse('materiais:lista_solicitacoes')
+    )
+    
     messages.success(request, f'Solicitação {solicitacao.numero} aprovada com sucesso!')
     return JsonResponse({'success': True, 'message': 'Solicitação aprovada!'})
 
@@ -340,6 +508,24 @@ def rejeitar_solicitacao(request, solicitacao_id):
         detalhes=observacoes
     )
     # --- FIM DO REGISTRO ---
+    
+    # NOTIFICAÇÕES - FASE 1
+    # Notifica o solicitante original
+    criar_notificacao_sistema(
+        destinatario_usuario=solicitacao.solicitante,
+        titulo="⚠️ SC Rejeitada",
+        mensagem=f"SC {solicitacao.numero} foi rejeitada por {request.user.get_full_name() or request.user.username}. Motivo: {observacoes}",
+        link=reverse('materiais:api_solicitacao_detalhes', args=[solicitacao.id]),
+        severidade="WARNING"
+    )
+    
+    # Notifica almoxarife do escritório (para acompanhamento)
+    criar_notificacao_sistema(
+        destinatario_perfil='almoxarife_escritorio',
+        titulo="SC Rejeitada",
+        mensagem=f"SC {solicitacao.numero} foi rejeitada. Motivo: {observacoes}",
+        link=reverse('materiais:historico_aprovacoes')
+    )
     
     messages.success(request, f'Solicitação {solicitacao.numero} rejeitada!')
     return JsonResponse({'success': True, 'message': 'Solicitação rejeitada!'})
@@ -443,6 +629,17 @@ def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
             conf = 'amarelo'
 
         valor_frete_str = request.POST.get('valor_frete', '0').replace('.', '').replace(',', '.')
+        
+        # Monta os valores originais para referência futura (usado no PDF da RM)
+        prazo_original = solicitacao.data_necessidade.strftime('%d/%m/%Y') if solicitacao.data_necessidade else None
+        
+        # Tenta pegar pagamento do envio original, senão usa padrão
+        if envio_original:
+            forma_orig = envio_original.get_forma_pagamento_display()
+            prazo_dias_orig = envio_original.prazo_pagamento
+            pagamento_original = f"{forma_orig} em {prazo_dias_orig} dias" if prazo_dias_orig else forma_orig
+        else:
+            pagamento_original = "Conforme negociado"
 
         try:
             with transaction.atomic():
@@ -460,7 +657,10 @@ def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
                         'observacoes': request.POST.get('observacoes'),
                         'origem': 'manual',
                         'registrado_por': request.user,
-                        'data_registro': datetime.now()
+                        'data_registro': datetime.now(),
+                        # Salva valores originais para uso no PDF quando "Atende" for marcado
+                        'prazo_original_escritorio': prazo_original,
+                        'pagamento_original_escritorio': pagamento_original,
                     }
                 )
 
@@ -486,6 +686,40 @@ def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
                     solicitacao=solicitacao, usuario=request.user, acao="Cotação Registrada",
                     detalhes=f"Preços de {fornecedor_selecionado.nome_fantasia} registrados via escritório."
                 )
+                
+                # NOTIFICAÇÕES - FASE 1
+                # 1. Notifica diretor (visibilidade)
+                criar_notificacao_sistema(
+                    destinatario_perfil='diretor',
+                    titulo="Cotação Registrada Manualmente",
+                    mensagem=f"SC {solicitacao.numero}: Cotação de {fornecedor_selecionado.nome_fantasia} registrada. Total: R$ {nova_cotacao.valor_total}",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+                )
+                
+                # NOTIFICAÇÕES - FASE 2
+                # Verifica se é cotação parcial (apenas alguns itens cotados)
+                total_itens_sc = solicitacao.itens.count()
+                if envio_original:
+                    total_itens_disponiveis = envio_original.itens.count()
+                else:
+                    total_itens_disponiveis = total_itens_sc
+                
+                if itens_count < total_itens_disponiveis:
+                    # Cotação PARCIAL - notifica almoxarife
+                    criar_notificacao_sistema(
+                        destinatario_perfil='almoxarife_escritorio',
+                        titulo="Cotação Parcial Registrada",
+                        mensagem=f"SC {solicitacao.numero}: Apenas {itens_count} de {total_itens_disponiveis} itens foram cotados por {fornecedor_selecionado.nome_fantasia}.",
+                        link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+                    )
+                
+                # 2. Verifica alteração de prazo
+                if prazo_entrega and prazo_entrega != "Atende":
+                    notificar_alteracao_prazo(
+                        solicitacao=solicitacao,
+                        prazo_fornecedor_str=prazo_entrega,
+                        fornecedor_nome=fornecedor_selecionado.nome_fantasia
+                    )
                 
                 messages.success(request, "Cotação registrada com sucesso!")
                 return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=recebidas")
@@ -555,12 +789,30 @@ def selecionar_cotacao_vencedora(request, cotacao_id):
                 if justificativa:
                     detalhes_hist += f" | JUSTIFICATIVA DE EXCEÇÃO: {justificativa}"
 
+                # Detecta fornecedores pendentes (convidados que ainda não responderam)
+                convidados_ids = solicitacao.envios_cotacao.values_list('fornecedor_id', flat=True)
+                responderam_ids = solicitacao.cotacoes.values_list('fornecedor_id', flat=True)
+                pendentes_qs = Fornecedor.objects.filter(id__in=convidados_ids).exclude(id__in=responderam_ids)
+                pendentes = list(pendentes_qs.values_list('nome_fantasia', flat=True))
+
+                if pendentes:
+                    detalhes_hist += f" | FORNECEDORES_PENDENTES: {', '.join(pendentes)}"
+
                 HistoricoSolicitacao.objects.create(
                     solicitacao=solicitacao, 
                     usuario=request.user, 
                     acao="RM Gerada",
                     detalhes=detalhes_hist
                 )
+
+                # Registro extra e explícito para auditoria quando houver pendentes
+                if pendentes:
+                    HistoricoSolicitacao.objects.create(
+                        solicitacao=solicitacao,
+                        usuario=request.user,
+                        acao="RM Gerada (com pendentes)",
+                        detalhes=f"Usuário gerou a RM {nova_rm.numero} apesar de fornecedores pendentes: {', '.join(pendentes)}"
+                    )
 
                 # 7. NOVA NOTIFICAÇÃO INTERNA (ALERTA NO PORTAL DO FORNECEDOR)
                 NotificacaoFornecedor.objects.create(
@@ -583,6 +835,40 @@ def selecionar_cotacao_vencedora(request, cotacao_id):
                         send_mail(assunto, corpo, settings.DEFAULT_FROM_EMAIL, [cotacao_vencedora.fornecedor.email])
                     except Exception as e:
                         print(f"Erro ao enviar e-mail: {e}")
+                
+                # NOTIFICAÇÕES - FASE 1
+                # 1. Notifica o solicitante original
+                criar_notificacao_sistema(
+                    destinatario_usuario=solicitacao.solicitante,
+                    titulo="✅ SC Finalizada - RM Gerada",
+                    mensagem=f"SC {solicitacao.numero} finalizada. Fornecedor: {cotacao_vencedora.fornecedor.nome_fantasia}. RM {nova_rm.numero} gerada e segue para assinaturas.",
+                    link=reverse('materiais:gerenciar_requisicoes')
+                )
+                
+                # 2. Verifica alteração de prazo de entrega
+                if cotacao_vencedora.prazo_entrega:
+                    notificar_alteracao_prazo(
+                        solicitacao=solicitacao,
+                        prazo_fornecedor_str=cotacao_vencedora.prazo_entrega,
+                        fornecedor_nome=cotacao_vencedora.fornecedor.nome_fantasia,
+                        rm_numero=nova_rm.numero
+                    )
+                
+                # 3. Notifica almoxarife do escritório (para iniciar processo de assinatura)
+                criar_notificacao_sistema(
+                    destinatario_perfil='almoxarife_escritorio',
+                    titulo="RM Gerada - Pendente Assinaturas",
+                    mensagem=f"RM {nova_rm.numero} gerada para SC {solicitacao.numero}. Aguarda assinatura do almoxarife.",
+                    link=reverse('materiais:gerenciar_requisicoes')
+                )
+                
+                # 4. Notifica diretor
+                criar_notificacao_sistema(
+                    destinatario_perfil='diretor',
+                    titulo="RM Gerada",
+                    mensagem=f"RM {nova_rm.numero} gerada. Fornecedor: {cotacao_vencedora.fornecedor.nome_fantasia}. Valor: R$ {cotacao_vencedora.valor_total}",
+                    link=reverse('materiais:gerenciar_requisicoes')
+                )
 
             messages.success(request, f"Cotação selecionada! RM {nova_rm.numero} gerada e fornecedor notificado.")
             
@@ -625,6 +911,31 @@ def rejeitar_cotacao(request, cotacao_id):
                     usuario=request.user,
                     acao="Cotação Alterada",
                     detalhes=historico_detalhes
+                )
+                
+                # NOTIFICAÇÕES - FASE 2
+                # 1. Notifica fornecedor (cotação rejeitada)
+                NotificacaoFornecedor.objects.create(
+                    fornecedor=fornecedor,
+                    titulo="Cotação Rejeitada",
+                    mensagem=f"Sua cotação para SC {solicitacao.numero} foi rejeitada. Você pode enviar nova proposta.",
+                    link=reverse('materiais:cotacoes_fornecedor')
+                )
+                
+                # 2. Notifica almoxarife de escritório
+                criar_notificacao_sistema(
+                    destinatario_perfil='almoxarife_escritorio',
+                    titulo="Cotação Rejeitada",
+                    mensagem=f"SC {solicitacao.numero}: Cotação de {fornecedor_nome} foi rejeitada. Convite permanece ativo.",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=aguardando'
+                )
+                
+                # 3. Notifica diretor
+                criar_notificacao_sistema(
+                    destinatario_perfil='diretor',
+                    titulo="Cotação Rejeitada",
+                    mensagem=f"SC {solicitacao.numero}: Cotação de {fornecedor_nome} foi rejeitada por {request.user.get_full_name() or request.user.username}.",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=aguardando'
                 )
 
             messages.success(request, f"Os preços do fornecedor {fornecedor_nome} foram removidos. O convite permanece ativo para nova cotação.")
@@ -1162,8 +1473,12 @@ def api_solicitacao_itens(request, solicitacao_id):
         
         # Busca todos os itens que já foram enviados para cotação
         itens_ja_enviados = set()
+        # Map item_id -> lista de fornecedores que receberam este item
+        item_enviado_por = {}
         for envio in solicitacao.envios_cotacao.all():
             itens_ja_enviados.update(envio.itens.values_list('id', flat=True))
+            for it in envio.itens.all():
+                item_enviado_por.setdefault(it.id, []).append(envio.fornecedor.nome_fantasia or envio.fornecedor.razao_social)
         
         itens_data = []
         for item in solicitacao.itens.all():
@@ -1173,7 +1488,8 @@ def api_solicitacao_itens(request, solicitacao_id):
                 'quantidade': float(item.quantidade),
                 'unidade': item.unidade,
                 'observacoes': item.observacoes or '',
-                'ja_enviado': item.id in itens_ja_enviados  # NOVO: flag para indicar se já foi enviado
+                    'ja_enviado': item.id in itens_ja_enviados,  # NOVO: flag para indicar se já foi enviado
+                    'enviado_por': item_enviado_por.get(item.id, [])
             })
         
         return JsonResponse({
@@ -1218,6 +1534,7 @@ def api_verificar_envios_anteriores(request, solicitacao_id):
                     'data_envio': envio_anterior.data_envio.strftime('%d/%m/%Y %H:%M'),
                     'itens_enviados': list(envio_anterior.itens.values_list('id', flat=True))
                 }
+            , 'fornecedor_nome': envio_anterior.fornecedor.nome_fantasia or envio_anterior.fornecedor.razao_social
             })
         else:
             return JsonResponse({
@@ -1812,14 +2129,33 @@ def gerenciar_cotacoes(request):
     formas_pagamento = EnvioCotacao.FORMAS_PAGAMENTO
 
     # Lógica de Abas (Preservada conforme original)
-    scs_recebidas = base_query.filter(
+    # CRÍTICO: SCs só saem de "Cotações Recebidas" quando TODOS os itens virarem RM
+    scs_recebidas_raw = base_query.filter(
         Q(status='cotacao_selecionada') | Q(status='aguardando_resposta', cotacoes__isnull=False)
     ).distinct().prefetch_related('cotacoes__fornecedor', 'envios_cotacao__fornecedor')
 
-    for sc in scs_recebidas:
-        sc.cotacoes_recebidas_ids = set(sc.cotacoes.values_list('fornecedor_id', flat=True))
+    scs_recebidas = []
+    for sc in scs_recebidas_raw:
+        # Verifica se TODOS os itens já viraram RM (têm cotação vencedora com RM gerada)
+        todos_itens_ids = set(sc.itens.values_list('id', flat=True))
+        
+        # Itens que já viraram RM: busca nos ItemCotacao que têm RM gerada
+        itens_com_rm = set()
+        for cotacao in sc.cotacoes.filter(vencedora=True):
+            # Se a cotação tem RM gerada, os itens dela estão "comprados"
+            if hasattr(cotacao, 'requisicaomaterial'):
+                itens_com_rm.update(cotacao.itens_cotados.values_list('item_solicitacao_id', flat=True))
+        
+        # Se ainda há itens SEM RM, mantém na aba "Cotações Recebidas"
+        itens_pendentes_rm = todos_itens_ids - itens_com_rm
+        if len(itens_pendentes_rm) > 0 or not itens_com_rm:
+            sc.cotacoes_recebidas_ids = set(sc.cotacoes.values_list('fornecedor_id', flat=True))
+            sc.itens_com_rm_count = len(itens_com_rm)
+            sc.itens_pendentes_rm_count = len(itens_pendentes_rm)
+            scs_recebidas.append(sc)
 
     # NOVA LÓGICA: Inclui SCs com status 'aguardando_resposta' OU que tenham envios mesmo estando 'aprovada'
+    # IMPORTANTE: Exclui itens que JÁ viraram RM (não devem aparecer mais em "Em Cotação")
     scs_em_cotacao_raw = base_query.filter(
         Q(status='aguardando_resposta') | Q(status__in=['aprovada', 'aprovado_engenharia'], envios_cotacao__isnull=False)
     ).distinct().prefetch_related('envios_cotacao__fornecedor', 'cotacoes')
@@ -1833,27 +2169,37 @@ def gerenciar_cotacoes(request):
         respondidos = set(sc.cotacoes.values_list('fornecedor_id', flat=True))
         convidados = set(sc.envios_cotacao.values_list('fornecedor_id', flat=True))
         
-        # Verifica se há itens pendentes
+        # Verifica se há itens pendentes (que ainda não foram enviados para cotação)
         todos_itens_sc = set(sc.itens.values_list('id', flat=True))
         itens_enviados_sc = set()
         for envio in sc.envios_cotacao.all():
             itens_enviados_sc.update(envio.itens.values_list('id', flat=True))
         
-        itens_pendentes = todos_itens_sc - itens_enviados_sc
+        # NOVO: Remove da contagem os itens que JÁ viraram RM
+        itens_com_rm_sc = set()
+        for cotacao in sc.cotacoes.filter(vencedora=True):
+            if hasattr(cotacao, 'requisicaomaterial'):
+                itens_com_rm_sc.update(cotacao.itens_cotados.values_list('item_solicitacao_id', flat=True))
         
-        # Se tem fornecedores aguardando resposta ou tem itens pendentes, adiciona
-        if any(f_id not in respondidos for f_id in convidados) or itens_pendentes:
+        # Itens que ainda podem ser cotados = todos - os que já viraram RM
+        itens_disponiveis_para_cotacao = todos_itens_sc - itens_com_rm_sc
+        itens_pendentes = itens_disponiveis_para_cotacao - itens_enviados_sc
+        
+        # CRÍTICO: Só mantém em "Em Cotação" se ainda há itens disponíveis (sem RM)
+        # E se tem fornecedores aguardando resposta OU itens ainda não enviados
+        if itens_disponiveis_para_cotacao and (any(f_id not in respondidos for f_id in convidados) or itens_pendentes):
             sc.cotacoes_recebidas_ids = respondidos
             sc.tem_itens_pendentes = bool(itens_pendentes)
             sc.itens_pendentes_count = len(itens_pendentes)
-            sc.total_itens = len(todos_itens_sc)
-            sc.itens_enviados_count = len(itens_enviados_sc)
+            sc.total_itens = len(itens_disponiveis_para_cotacao)  # Atualizado para contar só itens disponíveis
+            sc.itens_enviados_count = len(itens_enviados_sc - itens_com_rm_sc)
             scs_em_cotacao.append(sc)
 
     context = {
         'scs_para_iniciar': scs_para_iniciar,
         'scs_em_cotacao': scs_em_cotacao,
         'scs_recebidas': scs_recebidas,
+        'scs_recebidas_count': len(scs_recebidas),  # NOVO: contador para lista Python
         'aguardando_resposta_count': len(scs_em_cotacao),
         'formas_pagamento': formas_pagamento, # Injeção automática
     }
@@ -1896,6 +2242,32 @@ def editar_solicitacao_escritorio(request, solicitacao_id):
                     )
                 solicitacao.save()
                 HistoricoSolicitacao.objects.create(solicitacao=solicitacao, usuario=request.user, acao="SC Editada", detalhes="A solicitação foi editada pelo escritório.")
+                
+                # NOTIFICAÇÕES - FASE 2
+                # 1. Notifica solicitante (SC foi editada)
+                criar_notificacao_sistema(
+                    destinatario_usuario=solicitacao.solicitante,
+                    titulo="SC Editada pelo Escritório",
+                    mensagem=f"Sua SC {solicitacao.numero} foi editada por {request.user.get_full_name() or request.user.username}. Revise as alterações.",
+                    link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                )
+                
+                # 2. Notifica diretor (visibilidade)
+                criar_notificacao_sistema(
+                    destinatario_perfil='diretor',
+                    titulo="SC Editada",
+                    mensagem=f"SC {solicitacao.numero} foi editada por {request.user.get_full_name() or request.user.username}.",
+                    link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                )
+                
+                # 3. Notifica engenheiro responsável (se houver)
+                if solicitacao.destino and solicitacao.destino.engenheiro:
+                    criar_notificacao_sistema(
+                        destinatario_usuario=solicitacao.destino.engenheiro,
+                        titulo="SC Editada",
+                        mensagem=f"SC {solicitacao.numero} (obra {solicitacao.destino.nome}) foi editada. Verifique mudanças.",
+                        link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                    )
 
             messages.success(request, f'Solicitação "{solicitacao.numero}" atualizada com sucesso!')
             return redirect(f"{reverse('materiais:gerenciar_cotacoes')}?tab=iniciar-cotacao")
@@ -1995,7 +2367,19 @@ def enviar_cotacao_fornecedor(request, solicitacao_id):
                 # Se já existe envio com as MESMAS condições, apenas adiciona os novos itens
                 if envio_anterior:
                     envio = envio_anterior
-                    # Adiciona os novos itens aos já existentes (usando .add() para M2M)
+                    # VERIFICAÇÃO POR ITEM: recusa se algum dos itens selecionados
+                    # já está presente neste envio para evitar duplicidade/forjar posts.
+                    itens_existentes_ids = set(envio.itens.values_list('id', flat=True))
+                    selecionados_ids_set = set(map(int, itens_selecionados_ids))
+                    itens_ja_enviados = itens_existentes_ids.intersection(selecionados_ids_set)
+                    if itens_ja_enviados:
+                        itens_objs = ItemSolicitacao.objects.filter(id__in=itens_ja_enviados)
+                        descricoes = [f"{i.id}: {i.descricao}" for i in itens_objs]
+                        return JsonResponse({
+                            'success': False,
+                            'message': 'Alguns itens já foram enviados anteriormente a este fornecedor e não podem ser reenviados: ' + ', '.join(descricoes)
+                        }, status=400)
+                    # Adiciona apenas os novos itens aos já existentes (usando .add() para M2M)
                     novos_itens = ItemSolicitacao.objects.filter(id__in=itens_selecionados_ids)
                     envio.itens.add(*novos_itens)
                     # Atualiza observações se houver novas
@@ -2066,12 +2450,79 @@ def enviar_cotacao_fornecedor(request, solicitacao_id):
 # FUNÇÃO AUXILIAR PARA O E-MAIL (Adicione no final do views.py ou antes da def acima)
 def enviar_email_convite_automatico(fornecedor, solicitacao, envio):
     """
-    Tenta disparar o e-mail. Se falhar, apenas registra o erro sem interromper o fluxo.
+    Tenta disparar o e-mail com detalhes completos dos itens.
+    Se falhar, apenas registra o erro sem interromper o fluxo.
     Utilizado tanto para envio AUTO quanto MANUAL.
     """
     if not fornecedor.email:
         print(f"Aviso: Fornecedor {fornecedor.nome_fantasia} não possui e-mail cadastrado.")
         return False
+
+
+@login_required
+def registrar_remocao_fornecedores_bloqueados(request, solicitacao_id):
+    """
+    Endpoint AJAX para registrar em HistoricoSolicitacao que o usuário removeu fornecedores bloqueados
+    do modal de disparo. Espera um POST JSON com 'fornecedores': [{id, nome}, ...]
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Método não permitido.'}, status=405)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except Exception:
+        data = {}
+
+    fornecedores = data.get('fornecedores', [])
+    if not fornecedores:
+        return JsonResponse({'success': False, 'message': 'Nenhum fornecedor informado.'}, status=400)
+
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+
+    nomes = ', '.join([f"{f.get('id')}:{f.get('nome') or ''}" for f in fornecedores])
+    detalhes = f"Remoção automática de fornecedores bloqueados via modal: {nomes}"
+
+    HistoricoSolicitacao.objects.create(
+        solicitacao=solicitacao,
+        usuario=request.user,
+        acao="Removidos Fornecedores Bloqueados",
+        detalhes=detalhes
+    )
+
+    return JsonResponse({'success': True, 'message': 'Histórico registrado.'})
+
+
+@login_required
+def registrar_desfazer_remocao_fornecedores_bloqueados(request, solicitacao_id):
+    """
+    Endpoint AJAX para registrar desfazer da remoção de fornecedores bloqueados.
+    Espera um POST JSON com 'fornecedores': [{id, nome}, ...]
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Método não permitido.'}, status=405)
+
+    try:
+        data = json.loads(request.body.decode('utf-8') or '{}')
+    except Exception:
+        data = {}
+
+    fornecedores = data.get('fornecedores', [])
+    if not fornecedores:
+        return JsonResponse({'success': False, 'message': 'Nenhum fornecedor informado.'}, status=400)
+
+    solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
+
+    nomes = ', '.join([f"{f.get('id')}:{f.get('nome') or ''}" for f in fornecedores])
+    detalhes = f"Desfazer remoção de fornecedores bloqueados via modal: {nomes}"
+
+    HistoricoSolicitacao.objects.create(
+        solicitacao=solicitacao,
+        usuario=request.user,
+        acao="Desfazer Remoção Fornecedores Bloqueados",
+        detalhes=detalhes
+    )
+
+    return JsonResponse({'success': True, 'message': 'Desfazer registrado.'})
 
     assunto = f"Solicitação de Cotação - SC {solicitacao.numero} - {solicitacao.obra.nome}"
     
@@ -2083,25 +2534,35 @@ def enviar_email_convite_automatico(fornecedor, solicitacao, envio):
     ])
     forma_label = formas.get(envio.forma_pagamento, 'A Negociar')
 
+    # Lista detalhada de itens
+    itens_lista = ""
+    for item in envio.itens.all():
+        itens_lista += f"    - {item.quantidade:g} {item.unidade} de {item.descricao}\n"
+
     corpo = f"""
-    Prezado(a) {fornecedor.nome_fantasia},
+Prezado(a) {fornecedor.nome_fantasia},
 
-    Convidamos sua empresa a participar da cotação para a Solicitação de Compra nº {solicitacao.numero}.
+Convidamos sua empresa a participar da cotação referente à Solicitação de Compra nº {solicitacao.numero}.
 
-    DADOS DA SOLICITAÇÃO:
-    - Obra: {solicitacao.obra.nome}
-    - Prazo de Entrega Desejado: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}
+Obra: {solicitacao.obra.nome}
+Prazo de Entrega Desejado: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}
 
-    CONDIÇÕES DE NEGOCIAÇÃO SUGERIDAS:
-    - Forma de Pagamento: {forma_label}
-    - Prazo de Pagamento: {envio.prazo_pagamento} dias
-    - Observações: {envio.observacoes or 'Nenhuma.'}
+Itens solicitados:
+{itens_lista}
 
-    Por favor, acesse o nosso portal para registrar seus preços e prazos:
-    {settings.SITE_URL if hasattr(settings, 'SITE_URL') else 'Acesse nosso Portal'}
+Condições sugeridas:
+Forma de Pagamento: {forma_label}
+Prazo de Pagamento: {envio.prazo_pagamento} dias
+{('Observações: ' + envio.observacoes) if envio.observacoes else ''}
 
-    Atenciosamente,
-    Departamento de Compras
+Para participar, acesse o Portal do Fornecedor em: {settings.SITE_URL if hasattr(settings, 'SITE_URL') else 'entre em contato com a administração para obter o link'}
+Use as credenciais cadastradas (e-mail: {fornecedor.email}).
+
+Após o login, acesse "Minhas Cotações" e localize a SC {solicitacao.numero} para registrar sua proposta.
+
+Atenciosamente,
+Departamento de Compras
+Boa Vista Construtora
     """
 
     try:
@@ -2127,48 +2588,18 @@ def self_email_fornecedor(fornecedor, solicitacao):
     if fornecedor.email:
         assunto = f"Solicitação de Cotação - {solicitacao.numero} - Construtora"
         mensagem = f"""
-        Olá, {fornecedor.nome_fantasia}.
-        
-        Você recebeu um convite para cotar a Solicitação de Compra {solicitacao.numero}.
-        Obra: {solicitacao.obra.nome}
-        Prazo de entrega desejado: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}
-        
-        Por favor, acesse o nosso portal do fornecedor para registrar seus preços e condições.
-        """
+Olá {fornecedor.nome_fantasia},
+
+Você foi convidado a participar da cotação referente à Solicitação de Compra {solicitacao.numero}.
+Obra: {solicitacao.obra.nome}
+Prazo de entrega desejado: {solicitacao.data_necessidade.strftime('%d/%m/%Y')}
+
+Por favor, acesse o Portal do Fornecedor para registrar seus preços e condições.
+"""
         try:
             send_mail(assunto, mensagem, settings.DEFAULT_FROM_EMAIL, [fornecedor.email])
         except Exception:
             pass # Evita que erro de e-mail trave o sistema
-
-@login_required
-def gerar_email_cotacao(request, envio_id):
-    envio = get_object_or_404(EnvioCotacao.objects.select_related('solicitacao', 'fornecedor'), id=envio_id)
-    
-    itens_list_str = "\n".join([f"- {item.quantidade:g} {item.unidade} de {item.descricao}" for item in envio.itens.all()])
-    
-    email_body = (
-        f"Prezados(as) da empresa {envio.fornecedor.nome_fantasia},\n\n"
-        f"Gostaríamos de solicitar um orçamento para os seguintes itens, referentes à nossa Solicitação de Compra nº {envio.solicitacao.numero}:\n\n"
-        f"{itens_list_str}\n\n"
-        f"Condições sugeridas:\n"
-        f"- Forma de Pagamento: {envio.get_forma_pagamento_display()}\n"
-        f"- Prazo para Pagamento: {envio.prazo_pagamento} dias\n\n"
-        f"Observações adicionais: {envio.observacoes}\n\n"
-        f"Agradeceríamos se pudessem nos enviar a proposta até a data de {envio.prazo_resposta.strftime('%d/%m/%Y') if envio.prazo_resposta else 'o mais breve possível'}.\n\n"
-        f"Atenciosamente,\n"
-        f"{request.user.get_full_name() or request.user.username}"
-    )
-    
-    url_retorno = reverse('materiais:confirmar_envios_cotacao', args=[envio.solicitacao.id]) + f"?envios_ids={envio.id}"
-
-    context = {
-        'envio': envio,
-        'email_subject': f"Solicitação de Orçamento - SC {envio.solicitacao.numero}",
-        'email_body': email_body,
-        'url_retorno': url_retorno,
-    }
-    # A LINHA ABAIXO FOI CORRIGIDA COM O PARÊNTESE FINAL
-    return render(request, 'materiais/gerar_email_cotacao.html', context)
 
 @login_required
 def enviar_automatico_placeholder(request):
@@ -2209,6 +2640,7 @@ def api_dados_confirmacao_rm(request, cotacao_id):
         id=cotacao_id
     )
     solicitacao = cotacao.solicitacao
+    fornecedor = cotacao.fornecedor
     
     # Lógica de Pendentes
     convidados_ids = solicitacao.envios_cotacao.values_list('fornecedor_id', flat=True)
@@ -2229,14 +2661,34 @@ def api_dados_confirmacao_rm(request, cotacao_id):
         })
 
     # Dados do que foi solicitado (para comparação no modal de divergência)
-    envio = solicitacao.envios_cotacao.first()
+    envio = solicitacao.envios_cotacao.filter(fornecedor=fornecedor).first()
     solicitado_data = {}
+    data_envio_str = ''
     if envio:
         solicitado_data = {
             'prazo': envio.data_entrega_solicitada.strftime('%d/%m/%Y') if envio.data_entrega_solicitada else 'Prazo flexível',
-            'pagamento': f"{envio.get_forma_pagamento_display()} em {envio.prazo_pagamento} dias",
+            'pagamento': f"{envio.get_forma_pagamento_display()} em {envio.prazo_pagamento} dias" if envio.prazo_pagamento else envio.get_forma_pagamento_display(),
             'local': f"{solicitacao.destino.nome} - {solicitacao.destino.endereco}" if solicitacao.destino else f"{solicitacao.obra.nome} - {solicitacao.obra.endereco}"
         }
+        data_envio_str = envio.data_envio.strftime('%d/%m/%Y às %H:%M')
+
+    # Dados detalhados do fornecedor
+    fornecedor_data = {
+        'nome_fantasia': fornecedor.nome_fantasia or fornecedor.razao_social,
+        'razao_social': fornecedor.razao_social,
+        'cnpj': fornecedor.cnpj,
+        'email': fornecedor.email,
+        'telefone': fornecedor.contato_telefone or 'Não informado',
+        'whatsapp': fornecedor.contato_whatsapp or '',
+        'contato_nome': fornecedor.contato_nome or 'Não informado',
+        'endereco': f"{fornecedor.logradouro}, {fornecedor.numero} - {fornecedor.bairro}, {fornecedor.cidade}/{fornecedor.estado}" if fornecedor.logradouro else 'Não informado'
+    }
+
+    # Calcular subtotal de itens e valores
+    from django.db.models import Sum, F
+    subtotal_itens = cotacao.itens_cotados.aggregate(
+        total=Sum(F('preco') * F('item_solicitacao__quantidade'))
+    )['total'] or 0
 
     # RETORNO JSON COM O CAMPO 'conformidade' PARA O MODAL
     return JsonResponse({
@@ -2244,14 +2696,21 @@ def api_dados_confirmacao_rm(request, cotacao_id):
         'vencedora': {
             'fornecedor': cotacao.fornecedor.nome_fantasia or cotacao.fornecedor.nome,
             'valor_total': f"{cotacao.valor_total:.2f}".replace('.', ','),
+            'subtotal_itens': f"{subtotal_itens:.2f}".replace('.', ','),
             'frete': f"{(cotacao.valor_frete or 0):.2f}".replace('.', ','),
-            'prazo': cotacao.prazo_entrega or "Não informado",
-            'pagamento': cotacao.condicao_pagamento or "Não informado",
-            'local': f"{cotacao.endereco_entrega.nome} - {cotacao.endereco_entrega.endereco}" if cotacao.endereco_entrega else "Não informado"
+            # CORRIGIDO: Usar dados da COTAÇÃO (o que o fornecedor ofereceu), não do envio
+            'prazo': cotacao.prazo_entrega or 'Não informado',
+            'pagamento': cotacao.condicao_pagamento or 'Não informado',
+            'local': f"{cotacao.endereco_entrega.nome} - {cotacao.endereco_entrega.endereco}" if cotacao.endereco_entrega else "Não informado",
+            'observacoes': cotacao.observacoes or ''
         },
+        'fornecedor': fornecedor_data,
         'solicitado': solicitado_data,
         'pendentes': list(pendentes),
         'itens': itens_lista,
+        'data_envio': data_envio_str,
+        'data_resposta': cotacao.data_registro.strftime('%d/%m/%Y às %H:%M'),
+        'numero_sc': solicitacao.numero,
     })
 
 @login_required
@@ -2329,6 +2788,23 @@ def assinar_requisicao(request, rm_id):
                 solicitacao=solicitacao, usuario=request.user, acao="RM Assinada (1/2)",
                 detalhes=f"Primeira assinatura (Almoxarife Escritório) confirmada para a RM {rm.numero}."
             )
+            
+            # NOTIFICAÇÕES - FASE 1
+            # 1. Notifica diretor (para segunda assinatura)
+            criar_notificacao_sistema(
+                destinatario_perfil='diretor',
+                titulo="RM Aguardando Sua Assinatura",
+                mensagem=f"RM {rm.numero} assinada por {request.user.get_full_name() or request.user.username}. Aguarda sua assinatura final.",
+                link=reverse('materiais:gerenciar_requisicoes')
+            )
+            
+            # 2. Notifica solicitante (acompanhamento)
+            criar_notificacao_sistema(
+                destinatario_usuario=solicitacao.solicitante,
+                titulo="RM em Aprovação",
+                mensagem=f"RM {rm.numero} (sua SC {solicitacao.numero}) foi assinada pelo almoxarife. Aguarda diretor.",
+                link=reverse('materiais:gerenciar_requisicoes')
+            )
             # --- FIM DA LÓGICA ADICIONADA ---
         
         elif request.user.perfil == 'diretor' and rm.assinatura_almoxarife and not rm.assinatura_diretor:
@@ -2339,6 +2815,37 @@ def assinar_requisicao(request, rm_id):
 
             # --- INÍCIO DA LÓGICA ADICIONADA ---
             # Adiciona um registro no histórico da SC
+            HistoricoSolicitacao.objects.create(
+                solicitacao=solicitacao, usuario=request.user, acao="RM Totalmente Assinada (2/2)",
+                detalhes=f"Segunda assinatura (Diretor) confirmada para a RM {rm.numero}. Pronta para envio."
+            )
+            
+            # NOTIFICAÇÕES - FASE 1
+            # 1. Notifica almoxarife de escritório (pronta para enviar)
+            criar_notificacao_sistema(
+                destinatario_perfil='almoxarife_escritorio',
+                titulo="RM Pronta para Envio",
+                mensagem=f"RM {rm.numero} totalmente assinada. Pode ser enviada ao fornecedor.",
+                link=reverse('materiais:gerenciar_requisicoes')
+            )
+            
+            # 2. Notifica solicitante (RM aprovada)
+            criar_notificacao_sistema(
+                destinatario_usuario=solicitacao.solicitante,
+                titulo="RM Aprovada",
+                mensagem=f"RM {rm.numero} (sua SC {solicitacao.numero}) foi totalmente aprovada. Em breve será enviada ao fornecedor.",
+                link=reverse('materiais:gerenciar_requisicoes')
+            )
+            
+            # 3. Notifica engenheiro responsável pela obra (se existir)
+            if solicitacao.destino and solicitacao.destino.engenheiro:
+                criar_notificacao_sistema(
+                    destinatario_usuario=solicitacao.destino.engenheiro,
+                    titulo="RM Aprovada para Sua Obra",
+                    mensagem=f"RM {rm.numero} (obra {solicitacao.destino.nome}) aprovada. Material será enviado em breve.",
+                    link=reverse('materiais:gerenciar_requisicoes')
+                )
+            # --- FIM DA LÓGICA ADICIONADA ---
             HistoricoSolicitacao.objects.create(
                 solicitacao=solicitacao, usuario=request.user, acao="RM Assinada (2/2)",
                 detalhes=f"Segunda assinatura (Diretor) confirmada. RM {rm.numero} pronta para envio."
@@ -2393,6 +2900,43 @@ def enviar_rm_fornecedor(request, rm_id):
                 acao="Material a Caminho",
                 detalhes=f"A RM {rm.numero} foi enviada para o fornecedor {rm.cotacao_vencedora.fornecedor.nome_fantasia}. Cabeçalho utilizado: {header_choice}."
             )
+            
+            # NOTIFICAÇÕES - FASE 1
+            fornecedor = rm.cotacao_vencedora.fornecedor
+            
+            # 1. Notifica fornecedor via NotificacaoFornecedor
+            NotificacaoFornecedor.objects.create(
+                fornecedor=fornecedor,
+                titulo="Nova RM Recebida",
+                mensagem=f"RM {rm.numero} enviada. Providencie os materiais conforme especificado.",
+                link=reverse('materiais:cotacoes_fornecedor')
+            )
+            
+            # 2. Notifica solicitante (material a caminho)
+            criar_notificacao_sistema(
+                destinatario_usuario=solicitacao.solicitante,
+                titulo="Material a Caminho",
+                mensagem=f"RM {rm.numero} (sua SC {solicitacao.numero}) foi enviada para {fornecedor.nome_fantasia}.",
+                link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+            )
+            
+            # 3. Notifica engenheiro responsável pela obra
+            if solicitacao.destino and solicitacao.destino.engenheiro:
+                criar_notificacao_sistema(
+                    destinatario_usuario=solicitacao.destino.engenheiro,
+                    titulo="Material a Caminho",
+                    mensagem=f"RM {rm.numero} (obra {solicitacao.destino.nome}) enviada para {fornecedor.nome_fantasia}.",
+                    link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                )
+            
+            # 4. Notifica almoxarife da obra (prepare-se para receber)
+            if solicitacao.destino:
+                criar_notificacao_sistema(
+                    destinatario_perfil='almoxarife_obra',
+                    titulo="Prepare-se para Receber Material",
+                    mensagem=f"RM {rm.numero} (obra {solicitacao.destino.nome}) enviada. Prepare-se para recebimento.",
+                    link=reverse('materiais:gerenciar_requisicoes')
+                )
         
         messages.success(request, f'Envio da RM {rm.numero} confirmado com sucesso! Cabeçalho {header_choice} utilizado.')
         return redirect('materiais:gerenciar_requisicoes')
@@ -2490,6 +3034,49 @@ def visualizar_rm_pdf(request, rm_id):
     # ===================================================================
     # FIM DA LINHA ADICIONADA
     # ===================================================================
+    
+    # Busca o EnvioCotacao para pegar os dados originais de prazo e pagamento
+    envio_cotacao = rm.solicitacao_origem.envios_cotacao.filter(
+        fornecedor=rm.cotacao_vencedora.fornecedor
+    ).first()
+    
+    # Se não encontrar envio para este fornecedor, tenta pegar qualquer envio da SC
+    if not envio_cotacao:
+        envio_cotacao = rm.solicitacao_origem.envios_cotacao.first()
+    
+    solicitacao = rm.solicitacao_origem
+    
+    # Monta os valores de prazo e pagamento (usa valor real se "Atende" ou vazio)
+    prazo_entrega_display = rm.cotacao_vencedora.prazo_entrega
+    if not prazo_entrega_display or prazo_entrega_display == 'Atende':
+        # 1. Primeiro tenta pegar do envio_cotacao
+        if envio_cotacao and envio_cotacao.data_entrega_solicitada:
+            prazo_entrega_display = envio_cotacao.data_entrega_solicitada.strftime('%d/%m/%Y')
+        # 2. Tenta do campo original da cotação
+        elif rm.cotacao_vencedora.prazo_original_escritorio:
+            prazo_entrega_display = rm.cotacao_vencedora.prazo_original_escritorio
+        # 3. Usa data_necessidade da SC como fallback final
+        elif solicitacao.data_necessidade:
+            prazo_entrega_display = solicitacao.data_necessidade.strftime('%d/%m/%Y')
+        else:
+            prazo_entrega_display = 'A combinar'
+    
+    condicao_pagamento_display = rm.cotacao_vencedora.condicao_pagamento
+    if not condicao_pagamento_display or condicao_pagamento_display == 'Atende':
+        # 1. Primeiro tenta pegar do envio_cotacao
+        if envio_cotacao:
+            forma = envio_cotacao.get_forma_pagamento_display()
+            prazo_dias = envio_cotacao.prazo_pagamento
+            if prazo_dias and prazo_dias > 0:
+                condicao_pagamento_display = f'{forma} em {prazo_dias} dias'
+            else:
+                condicao_pagamento_display = forma
+        # 2. Tenta do campo original da cotação
+        elif rm.cotacao_vencedora.pagamento_original_escritorio:
+            condicao_pagamento_display = rm.cotacao_vencedora.pagamento_original_escritorio
+        # 3. Para cotações manuais sem dados de pagamento, mostra "Conforme negociado" 
+        else:
+            condicao_pagamento_display = 'Conforme negociado'
 
     context = {
         'rm': rm,
@@ -2497,7 +3084,9 @@ def visualizar_rm_pdf(request, rm_id):
         'fornecedor': rm.cotacao_vencedora.fornecedor,
         'itens_cotados': rm.cotacao_vencedora.itens_cotados.select_related('item_solicitacao').all(),
         'empresa': empresa_data, # <-- Usa o cabeçalho dinâmico
-        'subtotal_itens': subtotal_itens, 
+        'subtotal_itens': subtotal_itens,
+        'prazo_entrega_display': prazo_entrega_display,
+        'condicao_pagamento_display': condicao_pagamento_display,
     }
     
     html_string = render_to_string('materiais/rm_pdf_template.html', context)
@@ -2539,8 +3128,12 @@ def confirmar_envios_cotacao(request, solicitacao_id):
     ids_list = ids_param.split(',')
     envios = EnvioCotacao.objects.filter(id__in=ids_list).select_related('fornecedor', 'solicitacao__obra')
     
+    # Pega a URL do site das configurações
+    site_url = getattr(settings, 'SITE_URL', 'Entre em contato para obter o link de acesso')
+    
     return render(request, 'materiais/confirmar_envios_cotacao.html', {
-        'envios': envios
+        'envios': envios,
+        'site_url': site_url
     })
 
 @login_required
@@ -2703,6 +3296,60 @@ def iniciar_recebimento(request, solicitacao_id):
                     solicitacao=solicitacao, usuario=request.user, acao=acao_historico,
                     detalhes=f"Recebimento de {len(itens_selecionados_ids)} item(ns) registrado."
                 )
+                
+                # NOTIFICAÇÕES - FASE 2
+                if itens_completos == total_itens_sc:
+                    # Material recebido TOTALMENTE
+                    # 1. Notifica solicitante
+                    criar_notificacao_sistema(
+                        destinatario_usuario=solicitacao.solicitante,
+                        titulo="Material Recebido",
+                        mensagem=f"Todos os materiais da sua SC {solicitacao.numero} foram recebidos.",
+                        link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                    )
+                    
+                    # 2. Notifica engenheiro responsável
+                    if solicitacao.destino and solicitacao.destino.engenheiro:
+                        criar_notificacao_sistema(
+                            destinatario_usuario=solicitacao.destino.engenheiro,
+                            titulo="Material Recebido em Sua Obra",
+                            mensagem=f"SC {solicitacao.numero} (obra {solicitacao.destino.nome}): Todos os materiais foram recebidos.",
+                            link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                        )
+                    
+                    # 3. Notifica almoxarife de escritório
+                    criar_notificacao_sistema(
+                        destinatario_perfil='almoxarife_escritorio',
+                        titulo="Recebimento Completo",
+                        mensagem=f"SC {solicitacao.numero}: Todos os materiais foram recebidos por {request.user.get_full_name() or request.user.username}.",
+                        link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                    )
+                else:
+                    # Material recebido PARCIALMENTE
+                    # 1. Notifica solicitante
+                    criar_notificacao_sistema(
+                        destinatario_usuario=solicitacao.solicitante,
+                        titulo="Recebimento Parcial",
+                        mensagem=f"Parte dos materiais da sua SC {solicitacao.numero} foi recebida ({itens_completos}/{total_itens_sc} itens completos).",
+                        link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                    )
+                    
+                    # 2. Notifica engenheiro
+                    if solicitacao.destino and solicitacao.destino.engenheiro:
+                        criar_notificacao_sistema(
+                            destinatario_usuario=solicitacao.destino.engenheiro,
+                            titulo="Recebimento Parcial",
+                            mensagem=f"SC {solicitacao.numero} (obra {solicitacao.destino.nome}): Recebimento parcial registrado.",
+                            link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                        )
+                    
+                    # 3. Notifica almoxarife de escritório
+                    criar_notificacao_sistema(
+                        destinatario_perfil='almoxarife_escritorio',
+                        titulo="Recebimento Parcial",
+                        mensagem=f"SC {solicitacao.numero}: Recebimento parcial ({itens_completos}/{total_itens_sc} completos). Aguardando saldo.",
+                        link=reverse('materiais:visualizar_solicitacao', args=[solicitacao.id])
+                    )
                 
                 messages.success(request, f'Recebimento da SC {solicitacao.numero} registrado com sucesso!')
                 return redirect('materiais:registrar_recebimento')
@@ -3525,6 +4172,31 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
                             defaults={'preco': float(preco_limpo)}
                         )
             
+            # NOTIFICAÇÕES - FASE 1
+            # 1. Notifica almoxarife do escritório
+            criar_notificacao_sistema(
+                destinatario_perfil='almoxarife_escritorio',
+                titulo="📨 Nova Cotação Recebida",
+                mensagem=f"Fornecedor {fornecedor.nome_fantasia} respondeu a SC {solicitacao.numero}. Total: R$ {cotacao.valor_total}",
+                link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+            )
+            
+            # 2. Notifica diretor
+            criar_notificacao_sistema(
+                destinatario_perfil='diretor',
+                titulo="Cotação Recebida",
+                mensagem=f"SC {solicitacao.numero}: {fornecedor.nome_fantasia} enviou proposta de R$ {cotacao.valor_total}",
+                link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+            )
+            
+            # 3. Verifica alteração de prazo
+            if prazo_final and prazo_final != "Atende":
+                notificar_alteracao_prazo(
+                    solicitacao=solicitacao,
+                    prazo_fornecedor_str=prazo_final,
+                    fornecedor_nome=fornecedor.nome_fantasia
+                )
+            
             messages.success(request, "Cotação registrada e enviada com sucesso!")
             return redirect('materiais:dashboard_fornecedor')
 
@@ -3574,6 +4246,26 @@ def lista_cotacoes_fornecedor(request):
     else:
         solicitacoes = solicitacoes_base.order_by('-data_criacao')
         titulo_pagina = "Todas as Solicitações"
+    
+    # NOTIFICAÇÕES - FASE 2
+    # Notifica almoxarife quando fornecedor visualiza cotações (apenas na primeira vez em 24h)
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    # Verifica se já notificou nas últimas 24 horas
+    ultima_notificacao = Notificacao.objects.filter(
+        titulo__icontains="Fornecedor Visualizou Portal",
+        mensagem__icontains=fornecedor.nome_fantasia,
+        data_criacao__gte=timezone.now() - timedelta(hours=24)
+    ).first()
+    
+    if not ultima_notificacao and solicitacoes.exists():
+        criar_notificacao_sistema(
+            destinatario_perfil='almoxarife_escritorio',
+            titulo="Fornecedor Visualizou Portal",
+            mensagem=f"{fornecedor.nome_fantasia} acessou o portal de cotações.",
+            link=reverse('materiais:gerenciar_cotacoes') + '?tab=aguardando'
+        )
 
     context = {
         'solicitacoes': solicitacoes,
@@ -3662,3 +4354,202 @@ def marcar_notificacao_lida(request, notificacao_id):
         
     # Caso contrário, volta para o dashboard
     return redirect('materiais:dashboard_fornecedor')
+
+
+# ==================== FASE 3: COMENTÁRIOS ====================
+
+@login_required
+def adicionar_comentario_sc(request, sc_id):
+    """Adiciona comentário a uma SC e notifica mencionados (@usuario)"""
+    if request.method != 'POST':
+        return JsonResponse({'erro': 'Método não permitido'}, status=405)
+    
+    try:
+        sc = get_object_or_404(SolicitacaoCompra, id=sc_id)
+        texto = request.POST.get('texto', '').strip()
+        
+        if not texto:
+            return JsonResponse({'erro': 'Comentário vazio'}, status=400)
+        
+        # Cria comentário
+        from materiais.models import ComentarioSC
+        comentario = ComentarioSC.objects.create(
+            solicitacao=sc,
+            autor=request.user,
+            texto=texto
+        )
+        
+        # Detecta menções (@usuario)
+        import re
+        mencoes = re.findall(r'@(\w+)', texto)
+        
+        for username in mencoes:
+            try:
+                usuario = User.objects.get(username=username)
+                comentario.usuarios_mencionados.add(usuario)
+                
+                # Notifica usuário mencionado
+                criar_notificacao_sistema(
+                    destinatario_usuario=usuario,
+                    titulo=f"🗨️ Menção em SC {sc.numero}",
+                    mensagem=f"{request.user.username} mencionou você: {texto[:100]}...",
+                    link=f"/sc/{sc.id}"
+                )
+            except User.DoesNotExist:
+                pass
+        
+        # Notifica participantes da SC (solicitante, engenheiro, diretor)
+        participantes = [sc.solicitante]
+        if hasattr(sc, 'engenheiro') and sc.engenheiro:
+            participantes.append(sc.engenheiro)
+        
+        # Notifica diretor
+        criar_notificacao_sistema(
+            destinatario_perfil='diretor',
+            titulo=f"💬 Novo comentário em SC {sc.numero}",
+            mensagem=f"{request.user.username}: {texto[:80]}...",
+            link=f"/sc/{sc.id}"
+        )
+        
+        return JsonResponse({
+            'sucesso': True,
+            'comentario': {
+                'id': comentario.id,
+                'autor': comentario.autor.username,
+                'texto': comentario.texto,
+                'data': comentario.data_criacao.strftime('%d/%m/%Y %H:%M')
+            }
+        })
+        
+    except Exception as e:
+        return JsonResponse({'erro': str(e)}, status=500)
+
+
+@login_required
+def listar_comentarios_sc(request, sc_id):
+    """Lista todos os comentários de uma SC"""
+    try:
+        from materiais.models import ComentarioSC
+        comentarios = ComentarioSC.objects.filter(
+            solicitacao_id=sc_id
+        ).select_related('autor').order_by('data_criacao')
+        
+        dados = [{
+            'id': c.id,
+            'autor': c.autor.username,
+            'texto': c.texto,
+            'data': c.data_criacao.strftime('%d/%m/%Y %H:%M'),
+            'editado': c.editado
+        } for c in comentarios]
+        
+        return JsonResponse({'comentarios': dados})
+        
+    except Exception as e:
+        return JsonResponse({'erro': str(e)}, status=500)
+
+
+# ==================== FASE 3: DASHBOARD DE MÉTRICAS ====================
+
+@login_required
+def dashboard_metricas(request):
+    """Dashboard com métricas de desempenho de cotações"""
+    from materiais.models import MetricaCotacao
+    from datetime import timedelta
+    
+    # Busca métricas dos últimos 30 dias
+    data_fim = timezone.now().date()
+    data_inicio = data_fim - timedelta(days=30)
+    
+    metricas = MetricaCotacao.objects.filter(
+        data__range=(data_inicio, data_fim)
+    ).order_by('-data')
+    
+    # Métrica mais recente (resumo)
+    metrica_hoje = metricas.first()
+    
+    # Gráficos de tendência
+    datas = [m.data.strftime('%d/%m') for m in reversed(metricas[:30])]
+    valores_cotacao = [float(m.valor_total_cotado) for m in reversed(metricas[:30])]
+    taxa_resposta = [m.taxa_resposta_fornecedores or 0 for m in reversed(metricas[:30])]
+    
+    context = {
+        'metrica_hoje': metrica_hoje,
+        'metricas': metricas[:15],  # 15 dias na tabela
+        'datas_grafico': datas,
+        'valores_grafico': valores_cotacao,
+        'taxas_grafico': taxa_resposta,
+    }
+    
+    return render(request, 'materiais/dashboard_metricas.html', context)
+
+
+@login_required
+def api_sugestoes_fornecedores(request, sc_id):
+    """API para buscar sugestões IA de fornecedores para uma SC"""
+    try:
+        from materiais.ia_sugestoes import sugestao_ia_service
+        from materiais.models import SugestaoIA
+        
+        # Verifica se já existem sugestões recentes (últimas 24h)
+        sugestoes_existentes = SugestaoIA.objects.filter(
+            solicitacao_id=sc_id,
+            data_sugestao__gte=timezone.now() - timedelta(hours=24)
+        )
+        
+        if sugestoes_existentes.exists():
+            sugestoes = list(sugestoes_existentes)
+        else:
+            # Gera novas sugestões
+            sugestoes = sugestao_ia_service.gerar_sugestoes(sc_id, top_n=5)
+        
+        dados = [{
+            'fornecedor_id': s.fornecedor.id,
+            'fornecedor_nome': s.fornecedor.nome_fantasia,
+            'score_total': round(s.score_total, 1),
+            'score_confiabilidade': round(s.score_confiabilidade, 1),
+            'score_preco': round(s.score_preco, 1),
+            'score_prazo': round(s.score_prazo, 1),
+            'justificativa': s.justificativa,
+        } for s in sugestoes]
+        
+        return JsonResponse({'sugestoes': dados})
+        
+    except Exception as e:
+        return JsonResponse({'erro': str(e)}, status=500)
+
+
+@login_required
+def testar_whatsapp(request):
+    """View para testar configuração WhatsApp"""
+    if request.method != 'POST':
+        return JsonResponse({'erro': 'Método não permitido'}, status=405)
+    
+    try:
+        from materiais.whatsapp_service import whatsapp_service
+        
+        sucesso, mensagem = whatsapp_service.testar_conexao()
+        
+        return JsonResponse({
+            'sucesso': sucesso,
+            'mensagem': mensagem
+        })
+        
+    except Exception as e:
+        return JsonResponse({'erro': str(e)}, status=500)
+
+
+@login_required
+def api_solicitacao_meta(request, solicitacao_id):
+    """API para buscar metadados de uma SC (data necessária, etc)"""
+    try:
+        sc = SolicitacaoCompra.objects.get(id=solicitacao_id)
+        return JsonResponse({
+            'success': True,
+            'data_necessidade': sc.data_necessidade.isoformat() if sc.data_necessidade else None,
+            'numero': sc.numero,
+            'obra': sc.obra.nome if sc.obra else None
+        })
+    except SolicitacaoCompra.DoesNotExist:
+        return JsonResponse({'success': False, 'erro': 'SC não encontrada'}, status=404)
+    except Exception as e:
+        return JsonResponse({'success': False, 'erro': str(e)}, status=500)

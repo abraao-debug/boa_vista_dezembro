@@ -15,24 +15,71 @@
 
     /* AJUSTE VISUAL PARA O BOTÃO DE EMERGÊNCIA */
     .emergency-box {
-        /* Usa flexbox apenas para o alinhamento vertical, mantendo o conteúdo à esquerda */
         display: flex;
         align-items: center;
     }
     .emergency-box .form-check.form-switch {
         font-size: 1.25rem;
-        padding-left: 0; /* Remove padding padrão para controle manual */
-        display: inline-flex; /* Alinha o botão e o texto na mesma linha */
+        padding-left: 0;
+        display: inline-flex;
         align-items: center;
     }
     .emergency-box .form-check-input { 
         width: 3em; 
         height: 1.5em; 
-        float: none; /* Essencial para remover o alinhamento padrão do Bootstrap */
-        margin-left: 0; /* Remove a margem negativa que o puxava para a borda */
+        float: none;
+        margin-left: 0;
     }
     .emergency-box .form-check-label {
-        margin-left: 0.75rem; /* Adiciona o espaçamento correto entre o botão e o texto */
+        margin-left: 0.75rem;
+    }
+
+    /* MODAL MELHORADO - Layout em duas colunas */
+    #addItemModal .modal-body {
+        max-height: 75vh;
+        overflow: hidden;
+    }
+    
+    /* Coluna direita - lista de itens adicionados */
+    #colunaItensAdicionados {
+        min-height: 450px;
+    }
+    #listaItensModal .item-card {
+        background: white;
+        border: 1px solid #dee2e6;
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: all 0.2s ease;
+    }
+    #listaItensModal .item-card:hover {
+        border-color: #dc3545;
+        box-shadow: 0 2px 8px rgba(220, 53, 69, 0.15);
+    }
+    #listaItensModal .item-card .item-info {
+        flex: 1;
+        min-width: 0;
+    }
+    #listaItensModal .item-card .item-desc {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: #333;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    #listaItensModal .item-card .item-qty {
+        font-size: 0.7rem;
+        color: #6c757d;
+    }
+    #listaItensModal .item-card .btn-remove {
+        padding: 2px 8px;
+        font-size: 0.7rem;
+        flex-shrink: 0;
+        margin-left: 8px;
     }
 </style>
 
@@ -71,7 +118,7 @@
                             <input type="date" class="form-control" id="data_necessidade" name="data_necessidade" required>
                         </div>
                         <div class="col-md-6 mb-3">
-                            <label for="destino" class="form-label">Entrega em outra Obra? (Opcional)</label>
+                            <label for="destino" class="form-label">Endereço de entrega</label>
                             <select class="form-select" id="destino" name="destino">
                                 <option value="" selected>Mesma obra selecionada acima</option>
                                 {% for obra_dest in obras %}
@@ -102,72 +149,314 @@
 </form>
 
 <div class="modal fade" id="addItemModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content">
-            <div class="modal-header"><h5 class="modal-title">Adicionar Item do Catálogo</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-            <div class="modal-body">
-                <h6>Filtros</h6>
-                <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <label for="filtroCategoria" class="form-label">Categoria</label>
-                        <select class="form-select" id="filtroCategoria"><option value="" selected>Todas as Categorias</option>{% for cat in categorias_principais %}<option value="{{ cat.id }}">{{ cat.nome }}</option>{% endfor %}</select>
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title"><i class="fas fa-plus-circle me-2"></i>Adicionar Itens à Solicitação</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-0">
+                <div class="row g-0">
+                    <!-- COLUNA ESQUERDA: Busca e adição de itens -->
+                    <div class="col-md-7 p-4">
+                        <div class="mb-3">
+                            <label class="form-label fw-bold"><i class="fas fa-search me-1"></i>Buscar Item no Catálogo</label>
+                            <select class="form-select" id="itemCatalogoSelect" style="width: 100%;"></select>
+                        </div>
+                        
+                        <!-- Filtros: sempre visíveis (categoria e subcategoria) -->
+                        <div class="mb-3">
+                            <label class="form-label small text-muted"><i class="fas fa-filter me-1"></i>Filtrar por categoria</label>
+                            <div class="mt-2">
+                                <div class="row">
+                                    <div class="col-6">
+                                        <select class="form-select form-select-sm" id="filtroCategoria">
+                                            <option value="" selected>Todas Categorias</option>
+                                            {% for cat in categorias_principais %}<option value="{{ cat.id }}">{{ cat.nome }}</option>{% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="col-6">
+                                        <select class="form-select form-select-sm" id="filtroSubcategoria" disabled>
+                                            <option value="">Subcategoria...</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Detalhes do item selecionado -->
+                        <div id="itemDetails" class="d-none">
+                            <div class="card border-success mb-3">
+                                <div class="card-header bg-success-subtle py-2">
+                                    <strong class="small text-success"><i class="fas fa-box me-1"></i>Item Selecionado</strong>
+                                </div>
+                                <div class="card-body py-2">
+                                    <p id="detailDescricao" class="fw-bold mb-1 small"></p>
+                                    <small class="text-muted">Unidade: <span id="detailUnidade" class="fw-bold"></span></small>
+                                </div>
+                            </div>
+                            
+                            <form id="formAdicionarItem">
+                                <div class="row g-2">
+                                    <div class="col-6">
+                                        <label for="quantidadeInput" class="form-label small mb-1">Quantidade *</label>
+                                        <input type="number" class="form-control" id="quantidadeInput" min="0.01" step="0.01" required>
+                                    </div>
+                                    <div class="col-6">
+                                        <label for="observacaoInput" class="form-label small mb-1">Observação</label>
+                                        <input type="text" class="form-control" id="observacaoInput" placeholder="Opcional...">
+                                    </div>
+                                </div>
+                            </form>
+                            
+                            <!-- Aviso de item duplicado -->
+                            <div id="avisoDuplicado" class="alert alert-warning d-none small py-2 mt-2 mb-0">
+                                <i class="fas fa-exclamation-triangle me-1"></i>
+                                <span id="avisoDuplicadoTexto"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Placeholder quando nenhum item selecionado -->
+                        <div id="itemPlaceholder" class="text-center text-muted py-5">
+                            <i class="fas fa-hand-pointer fa-3x mb-3 opacity-25"></i>
+                            <p class="mb-0">Selecione um item do catálogo acima</p>
+                            <small>Use a busca ou os filtros para encontrar itens</small>
+                        </div>
                     </div>
-                    <div class="col-md-6 mb-3">
-                        <label for="filtroSubcategoria" class="form-label">Subcategoria</label>
-                        <select class="form-select" id="filtroSubcategoria" disabled><option value="">Selecione uma categoria...</option></select>
-                    </div>
-                </div>
-                <hr>
-                <div class="mb-3">
-                    <label for="itemCatalogoSelect" class="form-label">Buscar Item no Catálogo *</label>
-                    <select class="form-select" id="itemCatalogoSelect" style="width: 100%;"></select>
-                </div>
-                <div id="itemDetails" class="d-none">
-                    <div class="row bg-light p-2 rounded mb-3 mx-1">
-                        <div class="col-md-8"><small class="text-muted d-block">Descrição do Item (Travado)</small><p id="detailDescricao" class="fw-bold mb-0"></p></div>
-                        <div class="col-md-4"><small class="text-muted d-block">Unidade (Travado)</small><p id="detailUnidade" class="fw-bold mb-0"></p></div>
-                    </div>
-                    <div class="row">
-                        <div class="col-md-6 mb-3"><label for="quantidadeInput" class="form-label">Quantidade *</label><input type="number" class="form-control" id="quantidadeInput" value="1" min="0.01" step="0.01"></div>
-                        <div class="col-md-6 mb-3"><label for="observacaoInput" class="form-label">Observação (Opcional)</label><textarea class="form-control" id="observacaoInput" rows="1"></textarea></div>
+                    
+                    <!-- COLUNA DIREITA: Lista de itens adicionados -->
+                    <div class="col-md-5 bg-light border-start" id="colunaItensAdicionados">
+                        <div class="p-3 bg-success text-white">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span><i class="fas fa-shopping-cart me-2"></i><strong>Itens na SC</strong></span>
+                                <span class="badge bg-white text-success fs-6" id="countItensModal">0</span>
+                            </div>
+                        </div>
+                        <div id="listaItensModal" style="max-height: 380px; overflow-y: auto; padding: 12px;">
+                            <div id="placeholderItensModal" class="text-center text-muted py-5">
+                                <i class="fas fa-inbox fa-3x mb-3 opacity-25"></i>
+                                <p class="mb-1">Nenhum item adicionado</p>
+                                <small>Os itens aparecerão aqui</small>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-            <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button><button type="button" class="btn btn-success" id="addItemBtn">Adicionar Item</button></div>
+            <div class="modal-footer">
+                <button type="submit" form="formAdicionarItem" class="btn btn-success">
+                    <i class="fas fa-plus me-1"></i>Adicionar
+                </button>
+            </div>
         </div>
     </div>
 </div>
+
+<!-- Modal de confirmação para somar quantidades -->
+<div class="modal fade" id="modalSomarQuantidade" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header bg-warning py-2">
+                <h6 class="modal-title text-dark"><i class="fas fa-exclamation-circle me-2"></i>Item já existe na lista</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body py-4">
+                <div class="text-center mb-3">
+                    <i class="fas fa-layer-group fa-3x text-warning mb-2"></i>
+                </div>
+                <p class="text-center mb-2">
+                    <strong id="somarItemDescricao">-</strong>
+                </p>
+                <div class="bg-light rounded p-3 mb-3">
+                    <div class="row text-center">
+                        <div class="col-5">
+                            <small class="text-muted d-block">Quantidade atual</small>
+                            <strong class="fs-5 text-secondary" id="somarQtdAtual">0</strong>
+                        </div>
+                        <div class="col-2 d-flex align-items-center justify-content-center">
+                            <i class="fas fa-plus text-success"></i>
+                        </div>
+                        <div class="col-5">
+                            <small class="text-muted d-block">Nova quantidade</small>
+                            <strong class="fs-5 text-primary" id="somarQtdNova">0</strong>
+                        </div>
+                    </div>
+                    <hr class="my-2">
+                    <div class="text-center">
+                        <small class="text-muted d-block">Total após soma</small>
+                        <strong class="fs-4 text-success" id="somarQtdTotal">0</strong>
+                        <span class="text-muted" id="somarUnidade"></span>
+                    </div>
+                </div>
+                <p class="text-center text-muted small mb-0">
+                    <i class="fas fa-info-circle me-1"></i>
+                    Deseja somar as quantidades?
+                </p>
+            </div>
+            <div class="modal-footer border-0 justify-content-center py-2">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" id="btnConfirmarSoma">
+                    <i class="fas fa-check me-1"></i>Sim, Somar Quantidades
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- O carrinho flutuante agora está no base.html (global) -->
 {% endblock %}
 
 {% block javascript %}
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script>
 $(document).ready(function() {
-    let itemsList = [];
-    let catalogItems = []; // Este array será atualizado dinamicamente
+    // Tenta recuperar itens do localStorage (carrinho persistente)
+    let itemsList = JSON.parse(localStorage.getItem('sc_itens_rascunho') || '[]');
+    let catalogItems = [];
+    const STORAGE_KEY = 'sc_itens_rascunho';
 
-    // Seleciona os elementos do DOM
     const itemCatalogoSelect = $('#itemCatalogoSelect');
     const mainForm = document.getElementById('mainForm');
     const hiddenInput = document.getElementById('itensJsonInput');
     const itemsListContainer = document.getElementById('itemsListContainer');
     const placeholder = document.getElementById('placeholder');
     const itemCountSpan = document.getElementById('itemCount');
-    const addItemBtn = document.getElementById('addItemBtn');
     const filtroCategoria = $('#filtroCategoria');
     const filtroSubcategoria = $('#filtroSubcategoria');
     
     // Inicializa todos os componentes Select2 da página
-    $('#obra, #categoria_sc, #destino').select2();
+    $('#categoria_sc').select2();
+    $('#obra').select2();
+    $('#destino').select2();
     filtroCategoria.select2({ dropdownParent: $('#addItemModal') });
     filtroSubcategoria.select2({ dropdownParent: $('#addItemModal') });
+
+    // Quando a obra muda, atualiza o select de destino para esconder a obra selecionada
+    $('#obra').on('change', function() {
+        const obraId = $(this).val();
+        const $destino = $('#destino');
+        
+        // Mostra todas as opções primeiro
+        $destino.find('option').show();
+        
+        // Esconde a obra selecionada (para não duplicar)
+        if (obraId) {
+            $destino.find(`option[value="${obraId}"]`).hide();
+        }
+        
+        // Se o destino selecionado era a mesma obra, limpa
+        if ($destino.val() === obraId) {
+            $destino.val('').trigger('change');
+        }
+    });
+
+    // Renderiza itens recuperados do localStorage
+    if (itemsList.length > 0) {
+        renderItems();
+        atualizarCarrinhoGlobal();
+    }
+
+    // Função para salvar no localStorage
+    function salvarRascunho() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(itemsList));
+        atualizarCarrinhoGlobal();
+    }
+
+    // Função para limpar rascunho
+    function limparRascunho() {
+        localStorage.removeItem(STORAGE_KEY);
+        atualizarCarrinhoGlobal();
+    }
+
+    // Função para atualizar o carrinho global (que está no base.html)
+    function atualizarCarrinhoGlobal() {
+        const carrinho = $('#carrinhoGlobal');
+        if (itemsList.length > 0) {
+            carrinho.show();
+            $('#carrinhoGlobalBadge').text(itemsList.length);
+            
+            // Atualiza preview
+            let previewHtml = '';
+            itemsList.slice(0, 5).forEach(item => {
+                previewHtml += `<div class="carrinho-preview-item">
+                    <strong>${item.quantidade} ${item.unidade}</strong> - ${item.descricao.substring(0, 25)}${item.descricao.length > 25 ? '...' : ''}
+                </div>`;
+            });
+            if (itemsList.length > 5) {
+                previewHtml += `<div class="carrinho-preview-item text-muted text-center">
+                    <small>+ ${itemsList.length - 5} item(ns) mais...</small>
+                </div>`;
+            }
+            $('#carrinhoGlobalPreviewBody').html(previewHtml);
+        } else {
+            carrinho.hide();
+        }
+    }
+
+    // Função para verificar se item já foi adicionado
+    function verificarItemDuplicado(itemId, descricao) {
+        const duplicadoExato = itemsList.find(i => i.item_id == itemId);
+        if (duplicadoExato) {
+            return { tipo: 'exato', item: duplicadoExato };
+        }
+        
+        // Verifica similaridade simples (palavras em comum)
+        const palavrasNovo = descricao.toUpperCase().split(/\s+/).filter(p => p.length > 3);
+        for (const item of itemsList) {
+            const palavrasExistente = item.descricao.toUpperCase().split(/\s+/).filter(p => p.length > 3);
+            const palavrasComuns = palavrasNovo.filter(p => palavrasExistente.includes(p));
+            const similaridade = (palavrasComuns.length / Math.max(palavrasNovo.length, 1)) * 100;
+            if (similaridade >= 60) {
+                return { tipo: 'similar', item: item, similaridade: Math.round(similaridade) };
+            }
+        }
+        return null;
+    }
+
+    // Atualiza lista de itens já adicionados no modal (coluna esquerda)
+    function atualizarListaItensModal() {
+        const container = $('#listaItensModal');
+        const placeholder = $('#placeholderItensModal');
+        
+        $('#countItensModal').text(itemsList.length);
+        
+        if (itemsList.length === 0) {
+            container.html(`<div id="placeholderItensModal" class="text-center text-muted py-4">
+                <i class="fas fa-box-open fa-2x mb-2 opacity-50"></i>
+                <p class="small mb-0">Nenhum item adicionado ainda.</p>
+            </div>`);
+            return;
+        }
+        
+        let html = '';
+        itemsList.forEach((item, index) => {
+            html += `<div class="item-card" title="${item.descricao}">
+                <div class="item-info">
+                    <div class="item-desc">${item.descricao}</div>
+                    <div class="item-qty"><i class="fas fa-cube me-1"></i>${item.quantidade} ${item.unidade}</div>
+                </div>
+                <button type="button" class="btn btn-outline-danger btn-sm btn-remove remove-item-modal" data-index="${index}" title="Remover item">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>`;
+        });
+        container.html(html);
+    }
+
+    // Handler para remover item direto do modal
+    $(document).on('click', '.remove-item-modal', function() {
+        const index = $(this).data('index');
+        itemsList.splice(index, 1);
+        salvarRascunho();
+        renderItems();
+        atualizarListaItensModal();
+        atualizarCarrinhoGlobal();
+    });
 
     // Função central para carregar itens no select principal
     function carregarItens(categoriaId = null, subcategoriaId = null) {
         let url = `/api/itens-filtrados/`;
         let params = new URLSearchParams();
 
-        // Constrói a URL com os parâmetros corretos
         if (subcategoriaId) {
             params.append('subcategoria_id', subcategoriaId);
         } else if (categoriaId) {
@@ -187,10 +476,10 @@ $(document).ready(function() {
         fetch(url)
             .then(response => response.json())
             .then(data => {
-                catalogItems = data; // Atualiza nosso cache local de itens
+                catalogItems = data;
                 const itemsParaSelect = data.map(item => ({id: item.id, text: `${item.codigo} - ${item.descricao}`}));
                 
-                itemCatalogoSelect.empty().select2({ // Limpa antes de popular
+                itemCatalogoSelect.empty().select2({
                     placeholder: "Busque pelo código ou descrição do item...",
                     dropdownParent: $('#addItemModal'),
                     data: itemsParaSelect
@@ -203,14 +492,15 @@ $(document).ready(function() {
         filtroCategoria.val(null).trigger('change');
         filtroSubcategoria.empty().append('<option value="">Selecione uma categoria...</option>').prop('disabled', true).trigger('change');
         carregarItens();
+        atualizarListaItensModal();
+        // Limpa aviso de duplicado
+        $('#avisoDuplicado').addClass('d-none');
     });
 
     // Evento para o filtro de Categoria
     filtroCategoria.on('change', function() {
         const categoriaId = $(this).val();
         filtroSubcategoria.empty().prop('disabled', true);
-
-        // ATUALIZA A LISTA DE ITENS IMEDIATAMENTE
         carregarItens(categoriaId, null);
 
         if (!categoriaId) {
@@ -230,43 +520,141 @@ $(document).ready(function() {
             });
     });
 
-    // Evento para o filtro de Subcategoria (refina a busca)
+    // Evento para o filtro de Subcategoria
     filtroSubcategoria.on('change', function() {
         const categoriaId = filtroCategoria.val();
         const subcategoriaId = $(this).val();
         carregarItens(categoriaId, subcategoriaId);
     });
 
-    // O resto do seu JavaScript continua aqui (sem alterações)
+    // Ao selecionar um item, verifica duplicidade
     itemCatalogoSelect.on('change', function() {
         const selectedId = $(this).val();
         const selectedItem = catalogItems.find(item => item.id == selectedId);
         const detailsDiv = document.getElementById('itemDetails');
+        const placeholderDiv = document.getElementById('itemPlaceholder');
+        const avisoDuplicado = $('#avisoDuplicado');
+        const avisoDuplicadoTexto = $('#avisoDuplicadoTexto');
+        
+        avisoDuplicado.addClass('d-none');
+        
         if (selectedItem) {
             document.getElementById('detailDescricao').textContent = selectedItem.descricao;
             document.getElementById('detailUnidade').textContent = selectedItem.unidade__sigla;
             detailsDiv.classList.remove('d-none');
+            placeholderDiv.classList.add('d-none');
+            
+            // Foca no campo de quantidade
+            setTimeout(() => document.getElementById('quantidadeInput').focus(), 100);
+            
+            // Verifica duplicidade
+            const resultado = verificarItemDuplicado(selectedId, selectedItem.descricao);
+            if (resultado) {
+                if (resultado.tipo === 'exato') {
+                    avisoDuplicadoTexto.html(`<strong>Item já adicionado!</strong> Este item exato já está na sua lista com quantidade: ${resultado.item.quantidade} ${resultado.item.unidade}`);
+                    avisoDuplicado.removeClass('d-none alert-warning').addClass('alert-danger');
+                } else {
+                    avisoDuplicadoTexto.html(`<strong>Item semelhante encontrado!</strong> "${resultado.item.descricao}" (${resultado.similaridade}% similar). Verifique se não é duplicidade.`);
+                    avisoDuplicado.removeClass('d-none alert-danger').addClass('alert-warning');
+                }
+            }
         } else {
             detailsDiv.classList.add('d-none');
+            placeholderDiv.classList.remove('d-none');
         }
     });
 
-    addItemBtn.addEventListener('click', function() {
+    // Usa o submit do form para validação nativa do browser
+    let itemParaSomar = null; // Armazena dados do item duplicado para somar
+    
+    $('#formAdicionarItem').on('submit', function(e) {
+        e.preventDefault();
+        
         const selectedId = itemCatalogoSelect.val();
-        if (!selectedId) { alert('Por favor, selecione um item do catálogo.'); return; }
+        if (!selectedId) { 
+            alert('Por favor, selecione um item do catálogo.'); 
+            return; 
+        }
+        
         const quantidade = parseFloat(document.getElementById('quantidadeInput').value);
-        if (!quantidade || quantidade <= 0) { alert('Por favor, informe uma quantidade válida.'); return; }
         const selectedItem = catalogItems.find(item => item.id == selectedId);
+        
+        // Verifica se é duplicado exato
+        const resultado = verificarItemDuplicado(selectedId, '');
+        if (resultado && resultado.tipo === 'exato') {
+            // Guarda os dados para usar no callback do modal
+            itemParaSomar = {
+                itemId: selectedId,
+                novaQuantidade: quantidade,
+                quantidadeAtual: resultado.item.quantidade,
+                unidade: resultado.item.unidade,
+                descricao: resultado.item.descricao,
+                observacao: document.getElementById('observacaoInput').value.trim(),
+                indexExistente: itemsList.findIndex(i => i.item_id == selectedId)
+            };
+            
+            // Preenche o modal com os dados
+            $('#somarItemDescricao').text(selectedItem.descricao);
+            $('#somarQtdAtual').text(resultado.item.quantidade);
+            $('#somarQtdNova').text(quantidade);
+            $('#somarQtdTotal').text(resultado.item.quantidade + quantidade);
+            $('#somarUnidade').text(resultado.item.unidade);
+            
+            // Abre o modal de confirmação
+            $('#modalSomarQuantidade').modal('show');
+            return;
+        }
+        
+        adicionarItemNaLista(selectedItem, quantidade);
+    });
+    
+    // Callback do botão de confirmar soma
+    $('#btnConfirmarSoma').on('click', function() {
+        if (itemParaSomar) {
+            // Soma a quantidade no item existente
+            const novaQuantidade = itemParaSomar.quantidadeAtual + itemParaSomar.novaQuantidade;
+            itemsList[itemParaSomar.indexExistente].quantidade = novaQuantidade;
+            
+            // Atualiza observação se uma nova foi fornecida
+            if (itemParaSomar.observacao) {
+                const obsAtual = itemsList[itemParaSomar.indexExistente].observacao || '';
+                if (obsAtual && !obsAtual.includes(itemParaSomar.observacao)) {
+                    itemsList[itemParaSomar.indexExistente].observacao = obsAtual + ' | ' + itemParaSomar.observacao;
+                } else if (!obsAtual) {
+                    itemsList[itemParaSomar.indexExistente].observacao = itemParaSomar.observacao;
+                }
+            }
+            
+            salvarRascunho();
+            renderItems();
+            atualizarListaItensModal();
+            resetModal();
+            atualizarCarrinhoGlobal();
+            itemParaSomar = null;
+        }
+        $('#modalSomarQuantidade').modal('hide');
+        // Fecha também o modal principal após somar
+        $('#addItemModal').modal('hide');
+    });
+    
+    function adicionarItemNaLista(selectedItem, quantidade) {
         itemsList.push({
-            item_id: selectedId,
+            item_id: selectedItem.id,
             descricao: selectedItem.descricao,
             unidade: selectedItem.unidade__sigla,
             quantidade: quantidade,
             observacao: document.getElementById('observacaoInput').value.trim()
         });
+        
+        salvarRascunho();
         renderItems();
+        atualizarListaItensModal();
         resetModal();
-    });
+        atualizarCarrinhoGlobal();
+        
+        // Fecha o modal após adicionar o item
+        $('#addItemModal').modal('hide');
+    }
 
     function renderItems() {
         itemsListContainer.innerHTML = '';
@@ -275,7 +663,7 @@ $(document).ready(function() {
             itemsList.forEach((item, index) => {
                 const itemDiv = document.createElement('div');
                 itemDiv.className = 'item-adicionado mb-2 d-flex justify-content-between align-items-center';
-                itemDiv.innerHTML = `<div><strong>${item.descricao}</strong><small class="d-block text-muted">${item.quantidade} ${item.unidade}</small></div><div><button type="button" class="btn btn-sm btn-outline-danger remove-item-btn" data-index="${index}"><i class="fas fa-trash"></i></button></div>`;
+                itemDiv.innerHTML = `<div class="d-flex flex-column me-3"><div class="item-descricao text-truncate text-dark">${item.descricao}</div><small class="text-muted">${item.quantidade} ${item.unidade}</small></div><div><button type="button" class="btn btn-sm btn-outline-danger remove-item-btn" data-index="${index}"><i class="fas fa-trash"></i></button></div>`;
                 itemsListContainer.appendChild(itemDiv);
             });
         } else {
@@ -287,9 +675,11 @@ $(document).ready(function() {
     function resetModal() {
         itemCatalogoSelect.val(null).trigger('change');
         document.getElementById('itemDetails').classList.add('d-none');
-        document.getElementById('quantidadeInput').value = '1';
+        document.getElementById('itemPlaceholder').classList.remove('d-none');
+        document.getElementById('quantidadeInput').value = '';
         document.getElementById('observacaoInput').value = '';
-        bootstrap.Modal.getInstance(document.getElementById('addItemModal')).hide();
+        $('#avisoDuplicado').addClass('d-none');
+        // NÃO fecha o modal para facilitar adição de múltiplos itens
     }
     
     itemsListContainer.addEventListener('click', function(e) {
@@ -297,7 +687,9 @@ $(document).ready(function() {
         if (removeBtn) {
             const index = removeBtn.getAttribute('data-index');
             itemsList.splice(index, 1);
+            salvarRascunho();
             renderItems();
+            atualizarCarrinhoGlobal();
         }
     });
     
@@ -308,6 +700,8 @@ $(document).ready(function() {
             return;
         }
         hiddenInput.value = JSON.stringify(itemsList);
+        // Limpa o rascunho ao submeter com sucesso
+        limparRascunho();
     });
 });
 </script>

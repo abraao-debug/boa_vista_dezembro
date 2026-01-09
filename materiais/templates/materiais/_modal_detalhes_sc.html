@@ -68,12 +68,18 @@
   
       function getHistoryStyle(action) {
           let badgeClass = 'status-badge badge-finalizada'; let iconClass = 'text-secondary';
-          action = action.toLowerCase();
-          if (action.includes('criada') || action.includes('rejeitada')) { badgeClass = 'status-badge badge-aberto'; iconClass = 'text-danger'; }
-          else if (action.includes('aprova')) { badgeClass = 'status-badge badge-aprovado'; iconClass = 'text-success'; }
-          else if (action.includes('cotação')) { badgeClass = 'status-badge badge-cotacao'; iconClass = 'text-warning'; }
-          else if (action.includes('finalizada')) { badgeClass = 'status-badge badge-finalizada'; iconClass = 'text-muted'; }
-          else if (action.includes('recebido')) { badgeClass = 'status-badge badge-entregue'; iconClass = 'text-success'; }
+          const lower = action.toLowerCase();
+
+          // Destaque específico para RM gerada quando houver fornecedores pendentes
+          if (lower.includes('rm gerada') && lower.includes('pendentes')) {
+              return { badgeClass: 'status-badge badge-pendentes', iconClass: 'text-warning' };
+          }
+
+          if (lower.includes('criada') || lower.includes('rejeitada')) { badgeClass = 'status-badge badge-aberto'; iconClass = 'text-danger'; }
+          else if (lower.includes('aprova')) { badgeClass = 'status-badge badge-aprovado'; iconClass = 'text-success'; }
+          else if (lower.includes('cotação')) { badgeClass = 'status-badge badge-cotacao'; iconClass = 'text-warning'; }
+          else if (lower.includes('finalizada')) { badgeClass = 'status-badge badge-finalizada'; iconClass = 'text-muted'; }
+          else if (lower.includes('recebido')) { badgeClass = 'status-badge badge-entregue'; iconClass = 'text-success'; }
           return { badgeClass, iconClass };
       }
   
@@ -147,7 +153,22 @@
                       const historicoLista = document.getElementById('modalHistoricoLista');
                       data.historico.forEach(evento => {
                           const styles = getHistoryStyle(evento.status);
-                          historicoLista.innerHTML += `<div class="d-flex mb-3"><div class="me-3 pt-1"><i class="fas fa-circle ${styles.iconClass}"></i></div><div><strong class="${styles.badgeClass}" style="padding: .2em .5em; font-size: .8em;">${evento.status}</strong> - <small class="text-muted">${evento.timestamp}</small><div class="fs-sm">${evento.usuario}</div><div class="fs-sm text-muted">${evento.detalhes}</div></div></div>`;
+                          // Se for RM gerada com pendentes, enfatiza detalhes e mostra ícone de atenção
+                          if (evento.status.toLowerCase().includes('rm gerada') && evento.status.toLowerCase().includes('pendentes')) {
+                              historicoLista.innerHTML += `
+                                  <div class="d-flex mb-3">
+                                      <div class="me-3 pt-1"><i class="fas fa-exclamation-triangle ${styles.iconClass}"></i></div>
+                                      <div>
+                                          <strong class="${styles.badgeClass}" style="padding: .2em .5em; font-size: .8em;">${evento.status}</strong>
+                                          <small class="text-muted"> - ${evento.timestamp}</small>
+                                          <div class="fs-sm">${evento.usuario}</div>
+                                          <div class="fs-sm text-dark"><strong>Fornecedores pendentes:</strong> ${evento.detalhes}</div>
+                                      </div>
+                                  </div>
+                              `;
+                          } else {
+                              historicoLista.innerHTML += `<div class="d-flex mb-3"><div class="me-3 pt-1"><i class="fas fa-circle ${styles.iconClass}"></i></div><div><strong class="${styles.badgeClass}" style="padding: .2em .5em; font-size: .8em;">${evento.status}</strong> - <small class="text-muted">${evento.timestamp}</small><div class="fs-sm">${evento.usuario}</div><div class="fs-sm text-muted">${evento.detalhes}</div></div></div>`;
+                          }
                       });
   
                       if (modalType === 'action') {

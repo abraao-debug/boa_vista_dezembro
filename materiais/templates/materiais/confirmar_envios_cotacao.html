@@ -63,23 +63,33 @@
                 </div>
 
                 <label class="label-mini">MENSAGEM FORMATADA</label>
-                <div class="text-preview p-3" id="text-body-{{ envio.id }}">Olá, *{{ envio.fornecedor.nome_fantasia }}*!
+                <div class="text-preview p-3" id="text-body-{{ envio.id }}">Prezado(a) {{ envio.fornecedor.nome_fantasia }},
 
-Estamos solicitando uma cotação para a **SC {{ envio.solicitacao.numero }}**.
+A Boa Vista Construtora convida sua empresa a participar da cotação referente à Solicitação de Compra nº {{ envio.solicitacao.numero }}.
+
+DADOS DA SOLICITAÇÃO:
 Obra: {{ envio.solicitacao.obra.nome }}
+Prazo de Entrega Desejado: {{ envio.solicitacao.data_necessidade|date:"d/m/Y" }}
 
-*ITENS SOLICITADOS:*
-{% for item in envio.itens.all %}- {{ item.descricao|upper }} ({{ item.quantidade|floatformat:0 }} {{ item.unidade }})
+ITENS SOLICITADOS:
+{% for item in envio.itens.all %}- {{ item.quantidade|floatformat:0 }} {{ item.unidade }} de {{ item.descricao }}
 {% endfor %}
-*CONDIÇÕES SUGERIDAS:*
-- Pagamento: {{ envio.get_forma_pagamento_display }}
-- Prazo: {{ envio.prazo_pagamento }} dias
-- Entrega em: {{ envio.solicitacao.data_necessidade|date:"d/m/Y" }}
 
-*OBSERVAÇÕES:*
-{{ envio.observacoes|default:"Nenhuma." }}
+CONDIÇÕES DE NEGOCIAÇÃO SUGERIDAS:
+Forma de Pagamento: {{ envio.get_forma_pagamento_display }}
+Prazo de Pagamento: {{ envio.prazo_pagamento }} dias
+{% if envio.observacoes %}Observações: {{ envio.observacoes }}
+{% endif %}
 
-Por favor, responda com seus melhores preços e prazos através do nosso portal ou por este canal.</div>
+IMPORTANTE:
+Este é um envio manual. Por favor, responda a este contato ou acesse o Portal do Fornecedor para registrar sua proposta:
+{{ site_url }}
+
+E-mail de contato: {{ envio.fornecedor.email|default:'(não informado)' }}
+
+Atenciosamente,
+Departamento de Compras
+Boa Vista Construtora</div>
             </div>
 
             <div class="card-footer bg-white border-top-0 pb-3">

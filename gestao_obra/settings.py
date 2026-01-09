@@ -31,7 +31,7 @@ SECRET_KEY = 'django-insecure-b)^^d3)vx0$o7^qazi1-0tzp7l3b429gelx*s%q^ls7+_mjn2@
 DEBUG = True
 
 #ALLOWED_HOSTS = ['abraaolm.pythonanywhere.com']
-ALLOWED_HOSTS = ['abraaolm.pythonanywhere.com', '127.0.0.1', '192.168.3.11']
+ALLOWED_HOSTS = ['abraaolm.pythonanywhere.com', '127.0.0.1', 'localhost', '192.168.3.11']
 
 GEMINI_API_KEY = "AIzaSyDrZLqkMSpnzR3vzu7own5Af0nQ4hJqxsU"
 # Application definition

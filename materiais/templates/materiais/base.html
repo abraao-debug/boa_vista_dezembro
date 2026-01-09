@@ -100,6 +100,225 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery.mask/1.14.16/jquery.mask.min.js"></script>
     
+    <!-- CARRINHO FLUTUANTE GLOBAL - SC em andamento -->
+    <style>
+        #carrinhoGlobal {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1050;
+            display: none;
+        }
+        #carrinhoGlobal .carrinho-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            border: none;
+            box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+            color: white;
+            font-size: 1.5rem;
+            position: relative;
+            transition: all 0.3s ease;
+            animation: pulseCarrinhoGlobal 2s infinite;
+        }
+        #carrinhoGlobal .carrinho-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 20px rgba(40, 167, 69, 0.5);
+        }
+        #carrinhoGlobal .carrinho-badge {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background: #dc3545;
+            color: white;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            border: 2px solid white;
+        }
+        #carrinhoGlobal .carrinho-preview {
+            position: absolute;
+            bottom: 70px;
+            right: 0;
+            width: 300px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+            display: none;
+            overflow: hidden;
+        }
+        #carrinhoGlobal .carrinho-preview.show {
+            display: block;
+            animation: slideUpGlobal 0.3s ease;
+        }
+        @keyframes slideUpGlobal {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulseCarrinhoGlobal {
+            0%, 100% { box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4); }
+            50% { box-shadow: 0 4px 25px rgba(40, 167, 69, 0.7); }
+        }
+        #carrinhoGlobal .carrinho-preview-header {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+            color: white;
+            padding: 12px 15px;
+            font-weight: bold;
+        }
+        #carrinhoGlobal .carrinho-preview-body {
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        #carrinhoGlobal .carrinho-preview-item {
+            padding: 6px 8px;
+            border-bottom: 1px solid #eee;
+            font-size: 0.8rem;
+        }
+        #carrinhoGlobal .carrinho-preview-item:last-child {
+            border-bottom: none;
+        }
+        #carrinhoGlobal .carrinho-preview-footer {
+            background: #f8f9fa;
+            padding: 12px 15px;
+            border-top: 1px solid #eee;
+        }
+    </style>
+    
+    <div id="carrinhoGlobal">
+        <div class="carrinho-preview">
+            <div class="carrinho-preview-header">
+                <i class="fas fa-shopping-cart me-2"></i>SC em Andamento
+            </div>
+            <div class="carrinho-preview-body" id="carrinhoGlobalPreviewBody">
+                <!-- Itens serão listados aqui via JS -->
+            </div>
+            <div class="carrinho-preview-footer">
+                <a href="{% url 'materiais:nova_solicitacao' %}" class="btn btn-success btn-sm w-100 mb-2">
+                    <i class="fas fa-edit me-1"></i>Continuar SC
+                </a>
+                <button type="button" class="btn btn-outline-danger btn-sm w-100" id="btnLimparCarrinhoGlobal">
+                    <i class="fas fa-trash me-1"></i>Descartar Itens
+                </button>
+            </div>
+        </div>
+        <button type="button" class="carrinho-btn" id="btnCarrinhoGlobal" title="Você tem uma SC em andamento! Clique para continuar.">
+            <i class="fas fa-shopping-cart"></i>
+            <span class="carrinho-badge" id="carrinhoGlobalBadge">0</span>
+        </button>
+    </div>
+    
+    <script>
+    // Script global do carrinho - verifica localStorage em todas as páginas
+    $(document).ready(function() {
+        const STORAGE_KEY = 'sc_itens_rascunho';
+        let hideTimeout = null;
+        
+        function verificarCarrinhoGlobal() {
+            const itens = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+            const carrinho = $('#carrinhoGlobal');
+            
+            if (itens.length > 0) {
+                carrinho.show();
+                $('#carrinhoGlobalBadge').text(itens.length);
+                
+                // Atualiza preview
+                let previewHtml = '';
+                itens.slice(0, 5).forEach(item => {
+                    previewHtml += `<div class="carrinho-preview-item">
+                        <strong>${item.quantidade} ${item.unidade}</strong> - ${item.descricao.substring(0, 25)}${item.descricao.length > 25 ? '...' : ''}
+                    </div>`;
+                });
+                if (itens.length > 5) {
+                    previewHtml += `<div class="carrinho-preview-item text-muted text-center">
+                        <small>+ ${itens.length - 5} item(ns) mais...</small>
+                    </div>`;
+                }
+                $('#carrinhoGlobalPreviewBody').html(previewHtml);
+            } else {
+                carrinho.hide();
+            }
+        }
+        
+        // Verifica ao carregar a página
+        verificarCarrinhoGlobal();
+        
+        // Mostra preview ao passar mouse no botão ou no preview
+        $('#carrinhoGlobal').on('mouseenter', function() {
+            clearTimeout(hideTimeout);
+            $('#carrinhoGlobal .carrinho-preview').addClass('show');
+        });
+        
+        // Esconde preview após 3 segundos de sair com o mouse
+        $('#carrinhoGlobal').on('mouseleave', function() {
+            hideTimeout = setTimeout(function() {
+                $('#carrinhoGlobal .carrinho-preview').removeClass('show');
+            }, 3000); // 3 segundos de delay
+        });
+        
+        // Fecha ao clicar fora do carrinho
+        $(document).on('click', function(e) {
+            if (!$(e.target).closest('#carrinhoGlobal').length) {
+                $('#carrinhoGlobal .carrinho-preview').removeClass('show');
+            }
+        });
+        
+        // Clique no botão leva para a página de nova SC
+        $('#btnCarrinhoGlobal').on('click', function() {
+            window.location.href = '{% url "materiais:nova_solicitacao" %}';
+        });
+        
+        // Botão para limpar/descartar itens - abre modal de confirmação
+        $('#btnLimparCarrinhoGlobal').on('click', function(e) {
+            e.stopPropagation();
+            $('#modalDescartarItens').modal('show');
+        });
+        
+        // Confirma descarte no modal
+        $('#btnConfirmarDescarte').on('click', function() {
+            localStorage.removeItem(STORAGE_KEY);
+            $('#modalDescartarItens').modal('hide');
+            $('#carrinhoGlobal').fadeOut(300);
+        });
+        
+        // Escuta mudanças no localStorage (para sincronizar entre abas)
+        window.addEventListener('storage', function(e) {
+            if (e.key === STORAGE_KEY) {
+                verificarCarrinhoGlobal();
+            }
+        });
+    });
+    </script>
+    
+    <!-- Modal de confirmação para descartar itens -->
+    <div class="modal fade" id="modalDescartarItens" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-sm">
+            <div class="modal-content border-0 shadow">
+                <div class="modal-header bg-danger text-white py-2">
+                    <h6 class="modal-title"><i class="fas fa-exclamation-triangle me-2"></i>Descartar Itens</h6>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body text-center py-4">
+                    <i class="fas fa-trash-alt fa-3x text-danger mb-3"></i>
+                    <p class="mb-1 fw-bold">Tem certeza?</p>
+                    <p class="text-muted small mb-0">Todos os itens da SC em andamento serão removidos. Esta ação não pode ser desfeita.</p>
+                </div>
+                <div class="modal-footer border-0 justify-content-center py-2">
+                    <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-danger btn-sm" id="btnConfirmarDescarte">
+                        <i class="fas fa-trash me-1"></i>Sim, Descartar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     {% block javascript %}{% endblock %}
 
 </body>

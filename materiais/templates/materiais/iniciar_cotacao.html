@@ -172,7 +172,7 @@
 
                     <div class="p-3 border rounded bg-white shadow-sm">
                         <label class="form-label fw-bold text-primary small mb-1">VALOR DO FRETE (R$)</label>
-                        <input type="text" name="valor_frete" class="form-control mask-money mb-3" value="0,00" required>
+                        <input type="text" name="valor_frete" class="form-control mask-money mb-3" placeholder="0,00" required>
                         <label class="form-label fw-bold text-primary small mb-1">OBSERVAÇÕES DA NEGOCIAÇÃO</label>
                         <textarea name="observacoes" class="form-control form-control-sm" rows="2" placeholder="Notas sobre a negociação..."></textarea>
                     </div>
@@ -239,6 +239,9 @@
         if (destinoOriginalId && selectEndereco) {
             selectEndereco.value = destinoOriginalId;
         }
+        
+        // REMOVIDO: Validação de data máxima - Fornecedor pode responder com data posterior à data de necessidade
+        // Isso é válido pois representa a resposta oficial do fornecedor, que pode negociar prazos diferentes
     });
 
     let divergenciaAceita = false;

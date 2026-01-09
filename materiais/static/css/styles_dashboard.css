@@ -125,6 +125,13 @@ a.status-card-link:hover {
     border-color: #d5deda;
 }
 
+/* Badge para auditoria de RM gerada com fornecedores pendentes */
+.badge-pendentes {
+    color: #856404;
+    background-color: #fff3cd;
+    border-color: #ffeeba;
+}
+
 /* Estilo para a caixa de solicitação emergencial */
 .emergency-box {
     background-color: #f8d7da;

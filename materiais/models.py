@@ -598,3 +598,120 @@ class NotificacaoFornecedor(models.Model):
     def __str__(self):
         return f"{self.titulo} - {self.fornecedor.nome_fantasia}"
 
+
+# === FASE 3: NOVOS MODELS ===
+
+class ComentarioSC(models.Model):
+    """Comentários internos em Solicitações de Compra"""
+    solicitacao = models.ForeignKey(SolicitacaoCompra, on_delete=models.CASCADE, related_name='comentarios')
+    autor = models.ForeignKey(User, on_delete=models.CASCADE, related_name='comentarios_sc')
+    texto = models.TextField(verbose_name="Comentário")
+    data_criacao = models.DateTimeField(auto_now_add=True)
+    editado = models.BooleanField(default=False)
+    data_edicao = models.DateTimeField(null=True, blank=True)
+    
+    # Mencionar usuários (@usuario)
+    usuarios_mencionados = models.ManyToManyField(
+        User, 
+        blank=True, 
+        related_name='comentarios_mencionado'
+    )
+    
+    class Meta:
+        verbose_name = "Comentário SC"
+        verbose_name_plural = "Comentários SC"
+        ordering = ['data_criacao']
+    
+    def __str__(self):
+        return f"{self.autor.username} em SC {self.solicitacao.numero}"
+
+
+class MetricaCotacao(models.Model):
+    """Métricas diárias de desempenho de cotações"""
+    data = models.DateField(unique=True, verbose_name="Data da Métrica")
+    
+    # Métricas de SCs
+    total_scs_criadas = models.IntegerField(default=0)
+    total_scs_aprovadas = models.IntegerField(default=0)
+    total_scs_em_cotacao = models.IntegerField(default=0)
+    total_scs_finalizadas = models.IntegerField(default=0)
+    
+    # Métricas de Cotações
+    total_cotacoes_enviadas = models.IntegerField(default=0)
+    total_cotacoes_recebidas = models.IntegerField(default=0)
+    total_cotacoes_vencidas = models.IntegerField(default=0)
+    
+    # Métricas de Tempo
+    tempo_medio_aprovacao = models.FloatField(null=True, blank=True, help_text="Em horas")
+    tempo_medio_cotacao = models.FloatField(null=True, blank=True, help_text="Em horas")
+    tempo_medio_resposta_fornecedor = models.FloatField(null=True, blank=True, help_text="Em horas")
+    
+    # Métricas de Fornecedores
+    taxa_resposta_fornecedores = models.FloatField(null=True, blank=True, help_text="Percentual")
+    fornecedores_mais_rapidos = models.JSONField(null=True, blank=True)
+    fornecedores_mais_lentos = models.JSONField(null=True, blank=True)
+    
+    # Métricas de Valores
+    valor_total_cotado = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    valor_medio_cotacao = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    economia_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    
+    data_calculo = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Métrica de Cotação"
+        verbose_name_plural = "Métricas de Cotações"
+        ordering = ['-data']
+    
+    def __str__(self):
+        return f"Métricas {self.data.strftime('%d/%m/%Y')}"
+
+
+class SugestaoIA(models.Model):
+    """Sugestões de fornecedores pela IA Gemini"""
+    solicitacao = models.ForeignKey(SolicitacaoCompra, on_delete=models.CASCADE, related_name='sugestoes_ia')
+    fornecedor = models.ForeignKey(Fornecedor, on_delete=models.CASCADE, related_name='sugestoes_ia')
+    
+    score_confiabilidade = models.FloatField(help_text="Score 0-100")
+    score_preco = models.FloatField(help_text="Score 0-100")
+    score_prazo = models.FloatField(help_text="Score 0-100")
+    score_total = models.FloatField(help_text="Média ponderada")
+    
+    justificativa = models.TextField(blank=True)
+    data_sugestao = models.DateTimeField(auto_now_add=True)
+    aceita = models.BooleanField(null=True, blank=True)
+    
+    class Meta:
+        verbose_name = "Sugestão IA"
+        verbose_name_plural = "Sugestões IA"
+        ordering = ['-score_total']
+    
+    def __str__(self):
+        return f"{self.fornecedor.nome_fantasia} - Score: {self.score_total:.1f}"
+
+
+class ConfiguracaoWhatsApp(models.Model):
+    """Configurações para integração WhatsApp"""
+    ativo = models.BooleanField(default=False)
+    api_url = models.URLField(max_length=300, blank=True)
+    api_token = models.CharField(max_length=300, blank=True)
+    
+    # Números para notificações críticas
+    numero_almoxarife = models.CharField(max_length=20, blank=True)
+    numero_diretor = models.CharField(max_length=20, blank=True)
+    numero_engenheiro = models.CharField(max_length=20, blank=True)
+    
+    # Tipos de eventos para WhatsApp
+    notificar_sc_urgente = models.BooleanField(default=True)
+    notificar_cotacao_vencida = models.BooleanField(default=True)
+    notificar_rm_pendente_7dias = models.BooleanField(default=True)
+    
+    ultima_atualizacao = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Configuração WhatsApp"
+        verbose_name_plural = "Configurações WhatsApp"
+    
+    def __str__(self):
+        return f"WhatsApp {'Ativo' if self.ativo else 'Inativo'}"
+

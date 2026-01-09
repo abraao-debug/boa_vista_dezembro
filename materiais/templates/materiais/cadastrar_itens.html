@@ -206,6 +206,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const submitBtn = document.getElementById('submitBtn'); 
     const similaridadeModal = new bootstrap.Modal(document.getElementById('similaridadeModal'));
 
+    // Converte descrição para maiúsculas automaticamente
+    descricaoInput.addEventListener('input', function() {
+        const cursorPos = this.selectionStart;
+        this.value = this.value.toUpperCase();
+        this.setSelectionRange(cursorPos, cursorPos);
+    });
+
     // Desabilita o botão inicialmente até que a descrição seja validada
     submitBtn.disabled = true;
 

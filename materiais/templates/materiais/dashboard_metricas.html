@@ -1,0 +1,311 @@
+{% extends 'materiais/base.html' %}
+{% load static %}
+
+{% block title %}Dashboard de Métricas{% endblock %}
+
+{% block content %}
+<style>
+    .metric-card {
+        border-left: 4px solid;
+        transition: transform 0.2s;
+    }
+    .metric-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+    .metric-value {
+        font-size: 2.5rem;
+        font-weight: bold;
+    }
+    .metric-label {
+        font-size: 0.9rem;
+        color: #6c757d;
+    }
+    .trend-up {
+        color: #28a745;
+    }
+    .trend-down {
+        color: #dc3545;
+    }
+    .score-bar {
+        height: 8px;
+        border-radius: 4px;
+        overflow: hidden;
+    }
+</style>
+
+<div class="d-flex align-items-center mb-4">
+    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary me-3">
+        <i class="fas fa-arrow-left"></i> Voltar
+    </a>
+    <div>
+        <h4 class="mb-0">📊 Dashboard de Métricas</h4>
+        <p class="text-muted mb-0 small">Análise de desempenho de cotações e fornecedores</p>
+    </div>
+</div>
+
+{% if metrica_hoje %}
+<div class="alert alert-info mb-4">
+    <i class="fas fa-info-circle me-2"></i>
+    <strong>Última atualização:</strong> {{ metrica_hoje.data_calculo|date:"d/m/Y H:i" }}
+    <span class="ms-3">|</span>
+    <span class="ms-3"><strong>Dados de:</strong> {{ metrica_hoje.data|date:"d/m/Y" }}</span>
+</div>
+
+<!-- RESUMO EXECUTIVO -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card metric-card border-primary">
+            <div class="card-body">
+                <div class="metric-value text-primary">{{ metrica_hoje.total_scs_em_cotacao }}</div>
+                <div class="metric-label">
+                    <i class="fas fa-clipboard-list me-1"></i> SCs em Cotação
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card metric-card border-success">
+            <div class="card-body">
+                <div class="metric-value text-success">{{ metrica_hoje.total_cotacoes_recebidas }}</div>
+                <div class="metric-label">
+                    <i class="fas fa-envelope-open-text me-1"></i> Cotações Recebidas
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card metric-card border-danger">
+            <div class="card-body">
+                <div class="metric-value text-danger">{{ metrica_hoje.total_cotacoes_vencidas }}</div>
+                <div class="metric-label">
+                    <i class="fas fa-exclamation-triangle me-1"></i> Cotações Vencidas
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card metric-card border-info">
+            <div class="card-body">
+                <div class="metric-value text-info">
+                    {% if metrica_hoje.taxa_resposta_fornecedores %}
+                        {{ metrica_hoje.taxa_resposta_fornecedores|floatformat:0 }}%
+                    {% else %}
+                        --
+                    {% endif %}
+                </div>
+                <div class="metric-label">
+                    <i class="fas fa-users me-1"></i> Taxa de Resposta
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- MÉTRICAS DE TEMPO -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h6 class="mb-0"><i class="fas fa-clock me-2"></i>Tempo Médio de Processos</h6>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="fw-bold">Aprovação de SC</span>
+                        <span class="text-muted">
+                            {% if metrica_hoje.tempo_medio_aprovacao %}
+                                {{ metrica_hoje.tempo_medio_aprovacao|floatformat:1 }}h
+                            {% else %}
+                                --
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar bg-success" 
+                             style="width: {% if metrica_hoje.tempo_medio_aprovacao %}{{ metrica_hoje.tempo_medio_aprovacao|floatformat:0 }}%{% else %}0{% endif %}">
+                        </div>
+                    </div>
+                </div>
+                
+                <div>
+                    <div class="d-flex justify-content-between mb-1">
+                        <span class="fw-bold">Resposta de Fornecedor</span>
+                        <span class="text-muted">
+                            {% if metrica_hoje.tempo_medio_resposta_fornecedor %}
+                                {{ metrica_hoje.tempo_medio_resposta_fornecedor|floatformat:1 }}h
+                            {% else %}
+                                --
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar bg-info" 
+                             style="width: {% if metrica_hoje.tempo_medio_resposta_fornecedor %}{{ metrica_hoje.tempo_medio_resposta_fornecedor|floatformat:0 }}%{% else %}0{% endif %}">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h6 class="mb-0"><i class="fas fa-dollar-sign me-2"></i>Métricas Financeiras</h6>
+            </div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-6 border-end">
+                        <h5 class="text-success mb-1">R$ {{ metrica_hoje.valor_total_cotado|floatformat:2 }}</h5>
+                        <small class="text-muted">Valor Total Cotado</small>
+                    </div>
+                    <div class="col-6">
+                        <h5 class="text-primary mb-1">R$ {{ metrica_hoje.economia_total|floatformat:2 }}</h5>
+                        <small class="text-muted">Economia Total</small>
+                    </div>
+                </div>
+                <hr>
+                <div class="text-center">
+                    <small class="text-muted">Média por Cotação</small>
+                    <h6 class="mb-0">R$ {{ metrica_hoje.valor_medio_cotacao|floatformat:2 }}</h6>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- FORNECEDORES MAIS RÁPIDOS -->
+{% if metrica_hoje.fornecedores_mais_rapidos %}
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <h6 class="mb-0"><i class="fas fa-bolt me-2"></i>Fornecedores Mais Rápidos</h6>
+            </div>
+            <div class="card-body">
+                <div class="list-group list-group-flush">
+                    {% for fornecedor in metrica_hoje.fornecedores_mais_rapidos %}
+                    <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <div>
+                            <strong>{{ forloop.counter }}. {{ fornecedor.nome }}</strong>
+                            <br>
+                            <small class="text-muted">{{ fornecedor.total_respostas }} resposta(s)</small>
+                        </div>
+                        <span class="badge bg-success rounded-pill">
+                            {{ fornecedor.tempo_medio|floatformat:1 }}h
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-secondary text-white">
+                <h6 class="mb-0"><i class="fas fa-turtle me-2"></i>Fornecedores Mais Lentos</h6>
+            </div>
+            <div class="card-body">
+                <div class="list-group list-group-flush">
+                    {% for fornecedor in metrica_hoje.fornecedores_mais_lentos %}
+                    <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                        <div>
+                            <strong>{{ fornecedor.nome }}</strong>
+                            <br>
+                            <small class="text-muted">{{ fornecedor.total_respostas }} resposta(s)</small>
+                        </div>
+                        <span class="badge bg-danger rounded-pill">
+                            {{ fornecedor.tempo_medio|floatformat:1 }}h
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- HISTÓRICO (ÚLTIMOS 15 DIAS) -->
+<div class="card">
+    <div class="card-header bg-dark text-white">
+        <h6 class="mb-0"><i class="fas fa-chart-line me-2"></i>Histórico (Últimos 15 Dias)</h6>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover">
+                <thead class="table-light">
+                    <tr>
+                        <th>Data</th>
+                        <th class="text-center">SCs Criadas</th>
+                        <th class="text-center">Cotações Enviadas</th>
+                        <th class="text-center">Cotações Recebidas</th>
+                        <th class="text-center">Taxa Resposta</th>
+                        <th class="text-end">Valor Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for metrica in metricas %}
+                    <tr>
+                        <td>{{ metrica.data|date:"d/m/Y" }}</td>
+                        <td class="text-center">
+                            <span class="badge bg-primary">{{ metrica.total_scs_criadas }}</span>
+                        </td>
+                        <td class="text-center">
+                            <span class="badge bg-info">{{ metrica.total_cotacoes_enviadas }}</span>
+                        </td>
+                        <td class="text-center">
+                            <span class="badge bg-success">{{ metrica.total_cotacoes_recebidas }}</span>
+                        </td>
+                        <td class="text-center">
+                            {% if metrica.taxa_resposta_fornecedores %}
+                                <span class="badge {% if metrica.taxa_resposta_fornecedores >= 80 %}bg-success{% elif metrica.taxa_resposta_fornecedores >= 50 %}bg-warning{% else %}bg-danger{% endif %}">
+                                    {{ metrica.taxa_resposta_fornecedores|floatformat:0 }}%
+                                </span>
+                            {% else %}
+                                <span class="text-muted">--</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            <strong>R$ {{ metrica.valor_total_cotado|floatformat:2 }}</strong>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% else %}
+<div class="alert alert-warning text-center py-5">
+    <i class="fas fa-exclamation-triangle fa-3x mb-3"></i>
+    <h5>Nenhuma métrica disponível</h5>
+    <p class="mb-3">As métricas são calculadas automaticamente todos os dias às 23:00.</p>
+    <p class="small text-muted">Você pode calcular manualmente executando: <code>python manage.py calcular_metricas</code></p>
+</div>
+{% endif %}
+
+<div class="alert alert-light border mt-4">
+    <h6><i class="fas fa-robot me-2"></i>Cálculo Automático</h6>
+    <p class="mb-0 small">
+        As métricas são calculadas automaticamente todos os dias às <strong>23:00</strong> via APScheduler.
+        <br>
+        Para calcular manualmente: <code>python manage.py calcular_metricas</code>
+        <br>
+        Para calcular data específica: <code>python manage.py calcular_metricas --data 2026-01-08</code>
+    </p>
+</div>
+
+{% endblock %}
+
+{% block javascript %}
+<script>
+    console.log('📊 Dashboard de Métricas carregado');
+</script>
+{% endblock %}
