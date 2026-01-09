@@ -1,0 +1,107 @@
+{% extends 'materiais/base.html' %}
+{% block title %}Editar SC {{ solicitacao.numero }}{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:gerenciar_cotacoes' %}" class="btn btn-secondary me-3">
+        <i class="fas fa-arrow-left"></i> Voltar
+    </a>
+    <div>
+        <h4 class="mb-0">Editar SC {{ solicitacao.numero }}</h4>
+        <p class="text-muted mb-0 small">Status: {{ solicitacao.get_status_display }} | Solicitante: {{ solicitacao.solicitante.get_full_name }}</p>
+    </div>
+</div>
+<hr class="mb-4">
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    
+                    <div class="mb-3">
+                        <label for="obra" class="form-label">Obra *</label>
+                        <select name="obra" id="obra" class="form-select" required>
+                            <option value="">Selecione...</option>
+                            {% for obra in obras %}
+                            <option value="{{ obra.id }}" {% if solicitacao.obra_id == obra.id %}selected{% endif %}>
+                                {{ obra.nome }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="destino" class="form-label">Destino de Entrega</label>
+                        <select name="destino" id="destino" class="form-select">
+                            <option value="">Mesmo endereço da obra</option>
+                            {% for destino in destinos %}
+                            <option value="{{ destino.id }}" {% if solicitacao.destino_id == destino.id %}selected{% endif %}>
+                                {{ destino.obra.nome }} - {{ destino.nome }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="data_necessidade" class="form-label">Data de Necessidade *</label>
+                        <input type="date" name="data_necessidade" id="data_necessidade" 
+                               class="form-control" 
+                               value="{{ solicitacao.data_necessidade|date:'Y-m-d' }}" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="justificativa" class="form-label">Justificativa *</label>
+                        <textarea name="justificativa" id="justificativa" 
+                                  class="form-control" rows="3" required>{{ solicitacao.justificativa }}</textarea>
+                    </div>
+
+                    <div class="form-check mb-3">
+                        <input type="checkbox" name="is_emergencial" id="is_emergencial" 
+                               class="form-check-input" {% if solicitacao.is_emergencial %}checked{% endif %}>
+                        <label for="is_emergencial" class="form-check-label">
+                            <i class="fas fa-exclamation-triangle text-danger me-1"></i>
+                            Marcar como emergencial
+                        </label>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>Atenção:</strong> Esta edição não permite alterar os itens. Para edições completas, use o menu "Gerenciar Cotações".
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'materiais:gerenciar_cotacoes' %}" class="btn btn-outline-secondary">
+                            Cancelar
+                        </a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-save me-2"></i>Salvar Alterações
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card shadow-sm">
+            <div class="card-header bg-light">
+                <h6 class="mb-0"><i class="fas fa-box me-2"></i>Itens da SC</h6>
+            </div>
+            <div class="card-body">
+                <div class="list-group list-group-flush">
+                    {% for item in solicitacao.itens.all %}
+                    <div class="list-group-item px-0">
+                        <div class="d-flex justify-content-between">
+                            <strong>{{ item.quantidade|floatformat:0 }} {{ item.unidade }}</strong>
+                        </div>
+                        <small class="text-muted">{{ item.descricao }}</small>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

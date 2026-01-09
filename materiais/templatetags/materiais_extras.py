@@ -19,3 +19,13 @@ def remove_param(query_string, keys_to_remove):
 @register.filter(name='get_item')
 def get_item(dictionary, key):
     return dictionary.get(key)
+
+@register.filter(name='split')
+def split(value, separator=','):
+    """
+    Divide uma string usando um separador.
+    Exemplo de uso: {% for item in string|split:',' %}
+    """
+    if not value:
+        return []
+    return [item.strip() for item in value.split(separator)]

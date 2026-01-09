@@ -1,0 +1,284 @@
+{% extends 'materiais/base.html' %}
+{% load materiais_extras %}
+{% block title %}Editar Mensagem{% endblock %}
+
+{% block content %}
+<style>
+    .preview-box {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        font-family: 'Courier New', monospace;
+        white-space: pre-wrap;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    .var-badge {
+        background: #e7f3ff;
+        color: #0066cc;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.25rem;
+        font-family: 'Courier New', monospace;
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .var-badge:hover {
+        background: #0066cc;
+        color: white;
+        transform: scale(1.05);
+    }
+    .char-counter {
+        font-size: 0.85rem;
+        color: #6c757d;
+    }
+</style>
+
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:gerenciar_mensagens' %}" class="btn btn-secondary me-3">
+        <i class="fas fa-arrow-left"></i> Voltar
+    </a>
+    <div>
+        <h4 class="mb-0">Editar Mensagem</h4>
+        <p class="text-muted mb-0 small">
+            <span class="badge bg-{% if mensagem.categoria == 'notificacao_interna' %}primary{% elif mensagem.categoria == 'email_fornecedor' %}success{% else %}warning{% endif %} me-2">
+                {{ mensagem.get_categoria_display }}
+            </span>
+            {{ mensagem.get_tipo_display }}
+        </p>
+    </div>
+</div>
+<hr class="mb-4">
+
+{% if messages %}
+<div class="mb-3">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+        <i class="fas fa-{% if message.tags == 'success' %}check-circle{% elif message.tags == 'error' %}exclamation-triangle{% else %}info-circle{% endif %} me-2"></i>
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card shadow-sm">
+            <div class="card-header bg-light">
+                <h6 class="mb-0"><i class="fas fa-edit me-2"></i>Editar Template</h6>
+            </div>
+            <div class="card-body">
+                <form method="post" id="formEditarMensagem">
+                    {% csrf_token %}
+                    
+                    {% if mensagem.categoria == 'email_fornecedor' or mensagem.categoria == 'email_usuario' %}
+                    <div class="mb-3">
+                        <label for="assunto" class="form-label fw-bold">
+                            <i class="fas fa-envelope me-1"></i>Assunto do Email *
+                        </label>
+                        <input type="text" name="assunto" id="assunto" 
+                               class="form-control" value="{{ mensagem.assunto }}" 
+                               placeholder="Ex: Solicitação de Cotação - SC {numero_sc}"
+                               maxlength="200" required>
+                        <div class="form-text">
+                            O assunto aparecerá na caixa de entrada do destinatário
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <div class="mb-3">
+                        <label for="corpo" class="form-label fw-bold">
+                            <i class="fas fa-align-left me-1"></i>Corpo da Mensagem *
+                        </label>
+                        <textarea name="corpo" id="corpo" class="form-control" 
+                                  rows="15" required 
+                                  style="font-family: 'Courier New', monospace; font-size: 0.9rem;">{{ mensagem.corpo }}</textarea>
+                        <div class="d-flex justify-content-between align-items-center mt-1">
+                            <div class="form-text">
+                                <i class="fas fa-lightbulb me-1"></i>
+                                Use variáveis como <code>{numero_sc}</code> para substituição automática
+                            </div>
+                            <span class="char-counter">
+                                <span id="charCount">{{ mensagem.corpo|length }}</span> caracteres
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input type="checkbox" name="ativo" id="ativo" 
+                               class="form-check-input" role="switch"
+                               {% if mensagem.ativo %}checked{% endif %}>
+                        <label for="ativo" class="form-check-label">
+                            <i class="fas fa-toggle-on text-success me-1"></i>
+                            <strong>Mensagem ativa</strong>
+                        </label>
+                        <small class="form-text text-muted d-block ms-4">
+                            Mensagens inativas não serão utilizadas pelo sistema
+                        </small>
+                    </div>
+
+                    <hr>
+
+                    <div class="d-flex justify-content-between align-items-center">
+                        <a href="{% url 'materiais:gerenciar_mensagens' %}" class="btn btn-outline-secondary">
+                            <i class="fas fa-times me-1"></i>Cancelar
+                        </a>
+                        <button type="submit" class="btn btn-primary px-4" id="btnSalvar">
+                            <i class="fas fa-save me-2"></i>Salvar Alterações
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <!-- Variáveis Disponíveis -->
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-light">
+                <h6 class="mb-0"><i class="fas fa-code me-2"></i>Variáveis Disponíveis</h6>
+            </div>
+            <div class="card-body">
+                {% if mensagem.variaveis_disponiveis %}
+                <p class="small text-muted mb-2">Clique para copiar:</p>
+                <div class="d-flex flex-wrap gap-2">
+                    {% for var in mensagem.variaveis_disponiveis|split:',' %}
+                    <span class="var-badge" onclick="copiarVariavel('{{ var.strip }}')" title="Clique para copiar">
+                        {{ var.strip }}
+                    </span>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="small text-muted mb-0">Nenhuma variável disponível para este tipo de mensagem</p>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Exemplos -->
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-light">
+                <h6 class="mb-0"><i class="fas fa-lightbulb me-2"></i>Exemplos de Uso</h6>
+            </div>
+            <div class="card-body">
+                <div class="preview-box small">
+                    <div class="mb-2"><strong>Exemplo 1:</strong></div>
+                    <code>A Solicitação {numero_sc} foi aprovada!</code>
+                    
+                    <div class="mb-2 mt-3"><strong>Exemplo 2:</strong></div>
+                    <code>Obra: {obra}
+Prazo: {prazo_entrega}
+Status: {status}</code>
+                    
+                    <div class="mb-2 mt-3"><strong>Exemplo 3:</strong></div>
+                    <code>Olá {nome_fornecedor},
+Você foi convidado para cotar a SC {numero_sc}.
+Prazo para resposta: {prazo_resposta}</code>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Dicas -->
+        <div class="card shadow-sm border-warning">
+            <div class="card-header bg-warning bg-opacity-10">
+                <h6 class="mb-0 text-warning"><i class="fas fa-exclamation-triangle me-2"></i>Atenção</h6>
+            </div>
+            <div class="card-body">
+                <ul class="small mb-0 ps-3">
+                    <li class="mb-2">Use apenas as variáveis listadas acima</li>
+                    <li class="mb-2">Variáveis incorretas não serão substituídas</li>
+                    <li class="mb-2">Teste a mensagem após salvar</li>
+                    <li>Mantenha um tom profissional</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Contador de caracteres em tempo real
+document.getElementById('corpo').addEventListener('input', function() {
+    document.getElementById('charCount').textContent = this.value.length;
+});
+
+// Função para copiar variável ao clicar
+function copiarVariavel(variavel) {
+    const textarea = document.getElementById('corpo');
+    const inicio = textarea.selectionStart;
+    const fim = textarea.selectionEnd;
+    const textoAtual = textarea.value;
+    
+    // Insere a variável na posição do cursor
+    textarea.value = textoAtual.substring(0, inicio) + variavel + textoAtual.substring(fim);
+    
+    // Reposiciona o cursor após a variável inserida
+    textarea.selectionStart = textarea.selectionEnd = inicio + variavel.length;
+    textarea.focus();
+    
+    // Atualiza contador
+    document.getElementById('charCount').textContent = textarea.value.length;
+    
+    // Feedback visual
+    const event = new Event('input', { bubbles: true });
+    textarea.dispatchEvent(event);
+    
+    // Toast de confirmação
+    showToast('Variável inserida: ' + variavel);
+}
+
+function showToast(mensagem) {
+    const toast = document.createElement('div');
+    toast.className = 'position-fixed bottom-0 end-0 p-3';
+    toast.style.zIndex = '9999';
+    toast.innerHTML = `
+        <div class="toast show" role="alert">
+            <div class="toast-header bg-success text-white">
+                <i class="fas fa-check-circle me-2"></i>
+                <strong class="me-auto">Sucesso</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body">
+                ${mensagem}
+            </div>
+        </div>
+    `;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
+}
+
+// Confirmação antes de sair sem salvar
+let formAlterado = false;
+const form = document.getElementById('formEditarMensagem');
+const inputs = form.querySelectorAll('input, textarea');
+
+inputs.forEach(input => {
+    input.addEventListener('change', () => formAlterado = true);
+});
+
+form.addEventListener('submit', () => formAlterado = false);
+
+window.addEventListener('beforeunload', (e) => {
+    if (formAlterado) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+});
+
+// Feedback visual ao salvar
+document.getElementById('btnSalvar').addEventListener('click', function(e) {
+    const btn = this;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Salvando...';
+    
+    // O formulário será submetido normalmente, esta é apenas a animação
+    setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-save me-2"></i>Salvar Alterações';
+    }, 3000);
+});
+</script>
+
+{% endblock %}
+{% endblock %}
+

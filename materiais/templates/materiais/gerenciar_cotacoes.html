@@ -352,8 +352,8 @@
                                 </button>
                                 <form action="{% url 'materiais:rejeitar_cotacao' cotacao.id %}" method="post" style="display:inline;">
                                     {% csrf_token %}
-                                    <button type="button" class="btn btn-sm btn-warning w-100" onclick="abrirModalExclusao(this, 'cotação')">
-                                        <i class="fas fa-edit me-1"></i>ALTERAR COTAÇÃO
+                                    <button type="button" class="btn btn-sm btn-danger w-100" onclick="abrirModalExclusao(this, 'cotação', '{{ cotacao.fornecedor.nome_fantasia }}', {{ cotacao.id }})">
+                                        <i class="fas fa-trash me-1"></i>EXCLUIR COTAÇÃO
                                     </button>
                                 </form>
                             </div>
@@ -2213,10 +2213,28 @@ $(function() {
     };
 
     let formExcluir = null;
-    window.abrirModalExclusao = (btn, tipo) => {
+    window.abrirModalExclusao = (btn, tipo, fornecedorNome, cotacaoId) => {
         formExcluir = btn.closest('form');
-        const msg = (tipo === 'fornecedor') ? "Tem certeza que deseja cancelar este convite? O fornecedor perderá o acesso imediato ao portal e será necessário gerar um novo convite manual ou automático caso mude de ideia." : "Esta ação é irreversível. Ao excluir esta cotação, todos os preços registrados, orçamentos e o histórico de negociação deste fornecedor serão apagados permanentemente.";
-        $('#mensagemExclusao').text(msg);
+        let msg = '';
+        
+        if (tipo === 'fornecedor') {
+            msg = "Tem certeza que deseja cancelar este convite? O fornecedor perderá o acesso imediato ao portal e será necessário gerar um novo convite manual ou automático caso mude de ideia.";
+        } else if (tipo === 'cotação') {
+            msg = `<strong>⚠️ ATENÇÃO: Esta ação é IRREVERSÍVEL!</strong><br><br>Ao excluir a cotação de <strong>${fornecedorNome || 'este fornecedor'}</strong>, todos os seguintes dados serão <strong>PERMANENTEMENTE APAGADOS</strong>:<br><br>
+            <ul class="text-start mb-0">
+                <li>Todos os preços registrados</li>
+                <li>Condições de pagamento e prazos</li>
+                <li>Histórico de negociação com este fornecedor</li>
+                <li>Observações e anexos vinculados</li>
+            </ul><br>
+            <div class="alert alert-danger mb-0">
+                <i class="fas fa-exclamation-triangle me-2"></i>O fornecedor <strong>NÃO SERÁ NOTIFICADO</strong> sobre a exclusão. Esta operação não pode ser desfeita.
+            </div>`;
+        } else {
+            msg = "Esta ação é irreversível. Tem certeza que deseja continuar?";
+        }
+        
+        $('#mensagemExclusao').html(msg);
         new bootstrap.Modal(document.getElementById('modalConfirmarExclusao')).show();
     };
     $('#btnConfirmarExclusaoFinal').click(() => { if (formExcluir) { $('#btnConfirmarExclusaoFinal').prop('disabled', true); formExcluir.submit(); } });

@@ -27,7 +27,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for item in solicitacao.itens.all %}
+                    {% for item in itens_para_cotar %}
                     <tr>
                         <td>
                             <div class="fw-bold text-dark">{{ item.descricao }}</div>
@@ -39,7 +39,7 @@
                         <td class="text-end">
                             <input type="text" name="preco_{{ item.id }}" class="form-control form-control-sm text-end mask-money" 
                                    required placeholder="0,00" 
-                                   value="{% for ic in cotacao.itens_cotados.all %}{% if ic.item_solicitacao_id == item.id %}{{ ic.preco|floatformat:2 }}{% endif %}{% endfor %}">
+                                   value="{% if cotacao %}{% for ic in cotacao.itens_cotados.all %}{% if ic.item_solicitacao_id == item.id %}{{ ic.preco }}{% endif %}{% endfor %}{% endif %}">
                         </td>
                     </tr>
                     {% endfor %}
@@ -148,7 +148,7 @@
 
                     <div class="p-3 border rounded bg-white shadow-sm">
                         <label class="form-label fw-bold text-primary small d-block mb-1 text-uppercase">3. Valor do Frete (R$)</label>
-                        <input type="text" name="valor_frete" class="form-control mask-money" value="{% if cotacao.valor_frete and cotacao.valor_frete > 0 %}{{ cotacao.valor_frete }}{% endif %}" placeholder="0,00" required>
+                        <input type="text" name="valor_frete" class="form-control mask-money" value="{% if cotacao.valor_frete is not None %}{{ cotacao.valor_frete|floatformat:2 }}{% else %}0,00{% endif %}" placeholder="0,00" required>
                         <small class="text-muted">Se o frete for CIF (incluso), mantenha 0,00.</small>
                     </div>
                 </div>
@@ -170,18 +170,151 @@
                         <button type="submit" class="btn btn-success w-100 py-3 fw-bold shadow-lg">
                             <i class="fas fa-paper-plane me-2"></i>ENVIAR ORÇAMENTO PARA ANÁLISE
                         </button>
+                        
+                        {% if cotacao %}
+                        <div class="mt-3">
+                            <button type="button" class="btn btn-outline-danger btn-sm w-100" onclick="confirmarExclusaoCotacao()">
+                                <i class="fas fa-trash me-1"></i>Excluir Minha Cotação
+                            </button>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
         </div>
     </div>
 </form>
+
+<!-- Modal de Confirmação de Exclusão -->
+<div class="modal fade" id="modalConfirmarExclusaoCotacao" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow-lg border-0">
+            <div class="modal-header bg-danger text-white border-0 py-2">
+                <h6 class="modal-title"><i class="fas fa-trash-alt me-2"></i>Atenção: Ação Crítica</h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-4">
+                <div class="text-center mb-3">
+                    <i class="fas fa-exclamation-triangle fa-3x text-danger mb-3 opacity-50"></i>
+                </div>
+                <h5 class="mb-3 text-center fw-normal">Confirmar Exclusão da Cotação?</h5>
+                
+                <div class="alert alert-danger mb-3">
+                    <strong>⚠️ ATENÇÃO: Esta ação é IRREVERSÍVEL!</strong>
+                </div>
+                
+                <p class="text-muted text-center mb-3">
+                    Ao excluir sua cotação, os seguintes dados serão <strong>PERMANENTEMENTE APAGADOS</strong>:
+                </p>
+                
+                <ul class="text-muted mb-3">
+                    <li>Todos os preços informados</li>
+                    <li>Condições de pagamento e prazos propostos</li>
+                    <li>Histórico desta negociação</li>
+                </ul>
+                
+                <div class="alert alert-warning mb-0">
+                    <i class="fas fa-info-circle me-2"></i>
+                    <strong>Importante:</strong> A construtora NÃO será notificada automaticamente sobre esta exclusão. Você poderá enviar uma nova proposta posteriormente.
+                </div>
+            </div>
+            <div class="modal-footer border-0 bg-light d-flex justify-content-center py-3">
+                <button type="button" class="btn btn-secondary btn-sm px-4" data-bs-dismiss="modal">CANCELAR</button>
+                <form method="post" action="{% url 'materiais:fornecedor_excluir_propria_cotacao' solicitacao.id %}" style="display:inline;">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-danger btn-sm px-4 fw-bold shadow-sm">
+                        SIM, EXCLUIR DEFINITIVAMENTE
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block javascript %}
 <script>
 $(document).ready(function(){
+    // Aplica máscara de dinheiro
     $('.mask-money').mask('000.000.000.000.000,00', {reverse: true});
+    
+    // Garante que a máscara funciona com copy/paste
+    $('.mask-money').on('paste', function(e) {
+        const el = $(this);
+        setTimeout(function() {
+            // Força aplicar a máscara após o paste
+            el.trigger('input');
+            el.trigger('keyup');
+        }, 50);
+    });
+    
+    // Log para debug (remover depois)
+    $('form').on('submit', function(e) {
+        console.log('=== DEBUG FORM SUBMIT ===');
+        const formData = new FormData(this);
+        for (let [key, value] of formData.entries()) {
+            console.log(`${key}: ${value}`);
+        }
+    });
+    
+    {% if cotacao %}
+    // PREENCHE OS CAMPOS NA EDIÇÃO
+    
+    // 1. Prazo de entrega
+    {% if cotacao.prazo_entrega == "Atende" %}
+        $('#prazo_sim').prop('checked', true);
+    {% else %}
+        $('#prazo_nao').prop('checked', true).trigger('click');
+        {% if cotacao.prazo_entrega != "Não informado" %}
+            // Converte DD/MM/YYYY para YYYY-MM-DD
+            let prazoPartes = "{{ cotacao.prazo_entrega }}".split('/');
+            if(prazoPartes.length === 3) {
+                let dataISO = prazoPartes[2] + '-' + prazoPartes[1] + '-' + prazoPartes[0];
+                $('#input_prazo').val(dataISO);
+            }
+        {% endif %}
+        // Seleciona motivo
+        {% if cotacao.motivo_divergencia_prazo %}
+            $('#sel_motivo_prazo').val("{{ cotacao.motivo_divergencia_prazo }}");
+        {% endif %}
+    {% endif %}
+    
+    // 2. Condição de pagamento
+    {% if cotacao.condicao_pagamento == "Atende" %}
+        $('#pgto_sim').prop('checked', true);
+    {% else %}
+        $('#pgto_nao').prop('checked', true).trigger('click');
+        
+        // Parse da condição: "À Vista / 0 dias" ou "Boleto Bancário / 30 dias"
+        let condicao = "{{ cotacao.condicao_pagamento }}";
+        let partes = condicao.split(' / ');
+        if(partes.length === 2) {
+            // Mapeia nome para código
+            let formaMap = {
+                'À Vista': 'avista',
+                'Pix': 'pix',
+                'Boleto Bancário': 'boleto',
+                'Cartão de Crédito': 'cartao_credito',
+                'Cartão de Débito': 'cartao_debito',
+                'Transferência Bancária': 'transferencia',
+                'A Negociar': 'a_negociar'
+            };
+            
+            let formaNome = partes[0].trim();
+            let dias = partes[1].replace(' dias', '').trim();
+            
+            let formaCodigo = formaMap[formaNome] || '';
+            $('#sel_forma_pgto').val(formaCodigo);
+            $('#input_pgto_dias').val(dias);
+        }
+        
+        // Seleciona motivo
+        {% if cotacao.motivo_divergencia_pagamento %}
+            $('#sel_motivo_pgto').val("{{ cotacao.motivo_divergencia_pagamento }}");
+        {% endif %}
+    {% endif %}
+    {% endif %}
 });
 
 function gerenciarDivergencia(tipo, divergiu) {
@@ -210,6 +343,11 @@ function verificarOutroMotivo(selectElement, campoId) {
         campoExtra.style.display = 'none';
         inputExtra.required = false;
     }
+}
+
+function confirmarExclusaoCotacao() {
+    const modal = new bootstrap.Modal(document.getElementById('modalConfirmarExclusaoCotacao'));
+    modal.show();
 }
 </script>
 {% endblock %}

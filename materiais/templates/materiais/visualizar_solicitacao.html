@@ -1,0 +1,180 @@
+{% extends 'materiais/base.html' %}
+{% load materiais_extras %}
+
+{% block title %}SC {{ solicitacao.numero }} - Detalhes{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2>
+                    <i class="fas fa-file-alt"></i> 
+                    Solicitação de Compra {{ solicitacao.numero }}
+                </h2>
+                <div>
+                    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Voltar
+                    </a>
+                </div>
+            </div>
+
+            <!-- Informações Gerais -->
+            <div class="card mb-4">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="fas fa-info-circle"></i> Informações Gerais</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <p><strong>Número:</strong> {{ solicitacao.numero }}</p>
+                            <p><strong>Solicitante:</strong> {{ solicitacao.solicitante.username }}</p>
+                            <p><strong>Obra:</strong> {{ solicitacao.obra.nome }}</p>
+                            <p><strong>Data de Criação:</strong> {{ solicitacao.data_criacao|date:"d/m/Y H:i" }}</p>
+                        </div>
+                        <div class="col-md-6">
+                            <p><strong>Status:</strong> 
+                                <span class="badge {% if solicitacao.status == 'aprovado' %}bg-success{% elif solicitacao.status == 'rejeitado' %}bg-danger{% else %}bg-warning{% endif %}">
+                                    {{ solicitacao.get_status_display }}
+                                </span>
+                            </p>
+                            <p><strong>Data de Necessidade:</strong> {{ solicitacao.data_necessidade|date:"d/m/Y"|default:"Não informada" }}</p>
+                            <p><strong>Prioridade:</strong> {{ solicitacao.get_prioridade_display }}</p>
+                        </div>
+                    </div>
+                    {% if solicitacao.justificativa %}
+                    <hr>
+                    <p><strong>Justificativa:</strong></p>
+                    <p class="text-muted">{{ solicitacao.justificativa }}</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Itens Solicitados -->
+            <div class="card mb-4">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0"><i class="fas fa-boxes"></i> Itens Solicitados</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Item</th>
+                                    <th>Quantidade</th>
+                                    <th>Unidade</th>
+                                    <th>Observações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in itens %}
+                                <tr>
+                                    <td>{{ forloop.counter }}</td>
+                                    <td>{{ item.item.nome }}</td>
+                                    <td>{{ item.quantidade }}</td>
+                                    <td>{{ item.item.unidade }}</td>
+                                    <td>{{ item.observacoes|default:"-" }}</td>
+                                </tr>
+                                {% empty %}
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted">Nenhum item encontrado</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cotações -->
+            {% if cotacoes %}
+            <div class="card mb-4">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-dollar-sign"></i> Cotações</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Fornecedor</th>
+                                    <th>Valor Total</th>
+                                    <th>Status</th>
+                                    <th>Data</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for cotacao in cotacoes %}
+                                <tr>
+                                    <td>{{ cotacao.fornecedor.nome }}</td>
+                                    <td>R$ {{ cotacao.valor_total|floatformat:2 }}</td>
+                                    <td>
+                                        <span class="badge {% if cotacao.status == 'aprovada' %}bg-success{% elif cotacao.status == 'rejeitada' %}bg-danger{% else %}bg-warning{% endif %}">
+                                            {{ cotacao.get_status_display }}
+                                        </span>
+                                    </td>
+                                    <td>{{ cotacao.data_envio|date:"d/m/Y" }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Histórico -->
+            {% if historico %}
+            <div class="card">
+                <div class="card-header bg-secondary text-white">
+                    <h5 class="mb-0"><i class="fas fa-history"></i> Histórico (Últimos 10 eventos)</h5>
+                </div>
+                <div class="card-body">
+                    <div class="timeline">
+                        {% for evento in historico %}
+                        <div class="timeline-item mb-3">
+                            <div class="timeline-marker bg-primary"></div>
+                            <div class="timeline-content">
+                                <small class="text-muted">{{ evento.data|date:"d/m/Y H:i" }}</small>
+                                <p class="mb-0">{{ evento.descricao }}</p>
+                                {% if evento.usuario %}
+                                <small class="text-muted">por {{ evento.usuario.username }}</small>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<style>
+.timeline {
+    position: relative;
+    padding-left: 30px;
+}
+.timeline-item {
+    position: relative;
+}
+.timeline-marker {
+    position: absolute;
+    left: -30px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    top: 5px;
+}
+.timeline-content {
+    padding-left: 10px;
+    border-left: 2px solid #e9ecef;
+    padding-bottom: 10px;
+}
+.timeline-item:last-child .timeline-content {
+    border-left: none;
+}
+</style>
+{% endblock %}

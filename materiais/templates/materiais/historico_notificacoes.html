@@ -1,0 +1,125 @@
+{% extends 'materiais/base.html' %}
+{% load materiais_extras %}
+
+{% block title %}Histórico de Notificações{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2><i class="fas fa-bell"></i> Histórico de Notificações</h2>
+                <div>
+                    {% if nao_lidas > 0 %}
+                    <a href="{% url 'materiais:marcar_todas_lidas' %}" class="btn btn-primary">
+                        <i class="fas fa-check-double"></i> Marcar Todas como Lidas
+                    </a>
+                    {% endif %}
+                    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Voltar
+                    </a>
+                </div>
+            </div>
+
+            <!-- Estatísticas -->
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <div class="card border-primary">
+                        <div class="card-body text-center">
+                            <h3 class="mb-0">{{ total }}</h3>
+                            <small class="text-muted">Total de Notificações</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card border-warning">
+                        <div class="card-body text-center">
+                            <h3 class="mb-0">{{ nao_lidas }}</h3>
+                            <small class="text-muted">Não Lidas</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Lista de Notificações -->
+            <div class="card">
+                <div class="card-body p-0">
+                    {% if notificacoes %}
+                    <div class="list-group list-group-flush">
+                        {% for notificacao in notificacoes %}
+                        <a href="{% url 'materiais:marcar_notificacao_lida' notificacao.id %}" 
+                           class="list-group-item list-group-item-action {% if not notificacao.lida %}bg-light border-primary{% endif %}">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <div class="d-flex align-items-center mb-2">
+                                        {% if not notificacao.lida %}
+                                        <span class="badge bg-primary me-2">Nova</span>
+                                        {% else %}
+                                        <span class="badge bg-secondary me-2">Lida</span>
+                                        {% endif %}
+                                        <small class="text-muted">
+                                            <i class="fas fa-clock"></i> 
+                                            {{ notificacao.data_criacao|date:"d/m/Y H:i" }}
+                                        </small>
+                                    </div>
+                                    <h6 class="mb-1">{{ notificacao.titulo }}</h6>
+                                    <p class="mb-1 text-secondary">{{ notificacao.mensagem }}</p>
+                                </div>
+                                <div class="ms-3">
+                                    <i class="fas fa-chevron-right text-muted"></i>
+                                </div>
+                            </div>
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="text-center py-5">
+                        <i class="fas fa-bell-slash fa-3x text-muted mb-3"></i>
+                        <p class="text-muted">Nenhuma notificação encontrada</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Paginação -->
+            {% if notificacoes.has_other_pages %}
+            <nav aria-label="Navegação de páginas" class="mt-4">
+                <ul class="pagination justify-content-center">
+                    {% if notificacoes.has_previous %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ notificacoes.previous_page_number }}">Anterior</a>
+                    </li>
+                    {% else %}
+                    <li class="page-item disabled">
+                        <span class="page-link">Anterior</span>
+                    </li>
+                    {% endif %}
+
+                    {% for num in notificacoes.paginator.page_range %}
+                    {% if notificacoes.number == num %}
+                    <li class="page-item active">
+                        <span class="page-link">{{ num }}</span>
+                    </li>
+                    {% elif num > notificacoes.number|add:'-3' and num < notificacoes.number|add:'3' %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ num }}">{{ num }}</a>
+                    </li>
+                    {% endif %}
+                    {% endfor %}
+
+                    {% if notificacoes.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ notificacoes.next_page_number }}">Próxima</a>
+                    </li>
+                    {% else %}
+                    <li class="page-item disabled">
+                        <span class="page-link">Próxima</span>
+                    </li>
+                    {% endif %}
+                </ul>
+            </nav>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

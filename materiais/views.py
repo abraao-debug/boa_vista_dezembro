@@ -21,7 +21,7 @@ from .models import (
     NotificacaoFornecedor, User, SolicitacaoCompra, ItemSolicitacao, Fornecedor, ItemCatalogo, 
     Obra, Cotacao, RequisicaoMaterial, HistoricoSolicitacao, 
     ItemCotacao, CategoriaSC, EnvioCotacao, CategoriaItem, Tag, UnidadeMedida, DestinoEntrega,
-    Recebimento, ItemRecebido, NotificacaoFornecedor # <-- NOVOS MODELOS PRESENTES
+    Recebimento, ItemRecebido, NotificacaoFornecedor, Notificacao, MensagemPersonalizada
 )
 import json # Adicione esta importação no topo do seu arquivo views.py
 from django.db import transaction
@@ -533,14 +533,61 @@ def rejeitar_solicitacao(request, solicitacao_id):
     
 @login_required
 def editar_solicitacao(request, solicitacao_id):
-    # View placeholder para a futura tela de edição.
-    # No momento, ela apenas exibe uma mensagem e redireciona.
+    """
+    View para editar solicitações em status 'aprovada' (para iniciar).
+    Permite edição básica de obra, destino, data e justificativa.
+    """
     solicitacao = get_object_or_404(SolicitacaoCompra, id=solicitacao_id)
-    messages.info(request, f'A funcionalidade "Editar" para a SC {solicitacao.numero} está em desenvolvimento.')
     
-    # Redireciona de volta para a página mais relevante
-    if request.user.perfil == 'almoxarife_escritorio':
+    # Verifica permissões
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    # Permite editar apenas se status for 'aprovada' (para iniciar cotação)
+    if solicitacao.status != 'aprovada':
+        messages.warning(request, f'SC {solicitacao.numero} não pode ser editada no status atual: {solicitacao.get_status_display()}')
         return redirect('materiais:gerenciar_cotacoes')
+    
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                solicitacao.obra_id = request.POST.get('obra')
+                solicitacao.destino_id = request.POST.get('destino') or None
+                solicitacao.data_necessidade = request.POST.get('data_necessidade')
+                solicitacao.justificativa = request.POST.get('justificativa')
+                solicitacao.is_emergencial = request.POST.get('is_emergencial') == 'on'
+                solicitacao.save()
+                
+                HistoricoSolicitacao.objects.create(
+                    solicitacao=solicitacao,
+                    usuario=request.user,
+                    acao="SC Editada",
+                    detalhes=f"SC editada por {request.user.get_full_name() or request.user.username}"
+                )
+                
+                # Notifica solicitante
+                criar_notificacao_sistema(
+                    destinatario_usuario=solicitacao.solicitante,
+                    titulo="SC Editada",
+                    mensagem=f"Sua SC {solicitacao.numero} foi atualizada.",
+                    link=reverse('materiais:gerenciar_cotacoes')
+                )
+                
+                messages.success(request, f'SC {solicitacao.numero} atualizada com sucesso!')
+                return redirect('materiais:gerenciar_cotacoes')
+                
+        except Exception as e:
+            messages.error(request, f'Erro ao salvar: {e}')
+            return redirect('materiais:editar_solicitacao', solicitacao_id=solicitacao.id)
+    
+    # GET - Renderiza formulário
+    context = {
+        'solicitacao': solicitacao,
+        'obras': Obra.objects.filter(ativa=True).order_by('nome'),
+        'destinos': DestinoEntrega.objects.filter(obra__ativa=True).select_related('obra').order_by('obra__nome', 'nome'),
+    }
+    return render(request, 'materiais/editar_solicitacao_simples.html', context)
     
  
 
@@ -649,7 +696,7 @@ def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
                     defaults={
                         'prazo_entrega': prazo_final,
                         'condicao_pagamento': pgto_final, 
-                        'valor_frete': float(valor_frete_str) if valor_frete_str else 0.0,
+                        'valor_frete': Decimal(valor_frete_str) if valor_frete_str else Decimal('0.00'),
                         'endereco_entrega_id': endereco_id, 
                         'conformidade': conf,
                         'motivo_divergencia_prazo': motivo_prazo,
@@ -672,7 +719,7 @@ def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
                     preco_raw = request.POST.get(f'preco_{item_sol.id}')
                     if preco_raw:
                         preco_limpo = preco_raw.replace('R$', '').strip().replace('.', '').replace(',', '.')
-                        ItemCotacao.objects.create(cotacao=nova_cotacao, item_solicitacao=item_sol, preco=float(preco_limpo))
+                        ItemCotacao.objects.create(cotacao=nova_cotacao, item_solicitacao=item_sol, preco=Decimal(preco_limpo))
                         itens_count += 1
                 
                 if itens_count == 0:
@@ -714,10 +761,10 @@ def iniciar_cotacao(request, solicitacao_id, fornecedor_id=None):
                     )
                 
                 # 2. Verifica alteração de prazo
-                if prazo_entrega and prazo_entrega != "Atende":
+                if prazo_final and prazo_final != "Atende":
                     notificar_alteracao_prazo(
                         solicitacao=solicitacao,
-                        prazo_fornecedor_str=prazo_entrega,
+                        prazo_fornecedor_str=prazo_final,
                         fornecedor_nome=fornecedor_selecionado.nome_fantasia
                     )
                 
@@ -919,7 +966,7 @@ def rejeitar_cotacao(request, cotacao_id):
                     fornecedor=fornecedor,
                     titulo="Cotação Rejeitada",
                     mensagem=f"Sua cotação para SC {solicitacao.numero} foi rejeitada. Você pode enviar nova proposta.",
-                    link=reverse('materiais:cotacoes_fornecedor')
+                    link=reverse('materiais:lista_cotacoes_fornecedor')
                 )
                 
                 # 2. Notifica almoxarife de escritório
@@ -1304,27 +1351,102 @@ def buscar_itens_similares(request):
 
 @login_required
 def cadastrar_obras(request):
-    # PERMISSÃO CORRIGIDA PARA INCLUIR O DIRETOR
-    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
-        messages.error(request, 'Acesso negado. Apenas o escritório ou diretoria pode cadastrar obras.')
-        return redirect('materiais:dashboard')
+    """Redireciona para a nova página lista_obras (consolidada)"""
+    return redirect('materiais:lista_obras')
 
+
+@login_required
+def lista_obras(request):
+    """Lista todas as obras e permite criar novas"""
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
     if request.method == 'POST':
+        # Criação de nova obra
         nome = request.POST.get('nome')
         endereco = request.POST.get('endereco')
+        data_inicio = request.POST.get('data_inicio') or None
+        data_fim = request.POST.get('data_fim') or None
+        ativa = request.POST.get('ativa', 'on') == 'on'
         
         if nome:
             Obra.objects.create(
                 nome=nome,
-                endereco=endereco or ''
+                endereco=endereco or '',
+                data_inicio=data_inicio,
+                data_fim=data_fim,
+                ativa=ativa
             )
-            messages.success(request, f'Obra {nome} cadastrada com sucesso!')
-            return redirect('materiais:cadastrar_obras')
+            messages.success(request, f'Obra "{nome}" cadastrada com sucesso!')
+        else:
+            messages.error(request, 'Nome da obra é obrigatório.')
+        
+        return redirect('materiais:lista_obras')
+    
+    obras = Obra.objects.prefetch_related('destinos').order_by('-ativa', 'nome')
+    return render(request, 'materiais/lista_obras.html', {'obras': obras})
 
-    obras = Obra.objects.all().order_by('nome')
-    return render(request, 'materiais/cadastrar_obras.html', {
-        'obras': obras
-    })
+
+@login_required
+def editar_obra(request, obra_id):
+    """Edita uma obra existente"""
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    obra = get_object_or_404(Obra, id=obra_id)
+    
+    if request.method == 'POST':
+        try:
+            obra.nome = request.POST.get('nome')
+            obra.endereco = request.POST.get('endereco', '')
+            obra.data_inicio = request.POST.get('data_inicio') or None
+            obra.data_fim = request.POST.get('data_fim') or None
+            obra.ativa = request.POST.get('ativa', 'off') == 'on'
+            obra.save()
+            
+            messages.success(request, f'Obra "{obra.nome}" atualizada com sucesso!')
+            return redirect('materiais:lista_obras')
+        except Exception as e:
+            messages.error(request, f'Erro ao atualizar obra: {e}')
+    
+    return render(request, 'materiais/editar_obra.html', {'obra': obra})
+
+
+@login_required
+def excluir_obra(request, obra_id):
+    """Exclui uma obra se não houver solicitações vinculadas"""
+    if request.user.perfil not in ['almoxarife_escritorio', 'diretor']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    if request.method != 'POST':
+        messages.error(request, 'Método não permitido.')
+        return redirect('materiais:lista_obras')
+    
+    obra = get_object_or_404(Obra, id=obra_id)
+    
+    # Verifica se existe alguma solicitação vinculada a esta obra
+    solicitacoes_count = obra.solicitacoes_origem.count()
+    
+    if solicitacoes_count > 0:
+        messages.error(
+            request, 
+            f'Não é possível excluir a obra "{obra.nome}". '
+            f'Existem {solicitacoes_count} solicitaç{"ão" if solicitacoes_count == 1 else "ões"} vinculada{"" if solicitacoes_count == 1 else "s"} a esta obra.'
+        )
+        return redirect('materiais:lista_obras')
+    
+    # Se não houver solicitações, pode excluir
+    nome_obra = obra.nome
+    try:
+        obra.delete()
+        messages.success(request, f'Obra "{nome_obra}" excluída com sucesso!')
+    except Exception as e:
+        messages.error(request, f'Erro ao excluir obra: {e}')
+    
+    return redirect('materiais:lista_obras')
 
 
 @login_required
@@ -4059,14 +4181,22 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
     cotacao_existente = Cotacao.objects.filter(solicitacao=solicitacao, fornecedor=fornecedor).first()
 
     if request.method == 'POST':
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"=== POST DATA DEBUG ===")
+        logger.debug(f"POST keys: {list(request.POST.keys())}")
+        
         # --- 1. PROCESSAMENTO DO PRAZO DE ENTREGA ---
         aceita_prazo = request.POST.get('aceita_prazo')
+        logger.debug(f"aceita_prazo: {aceita_prazo}")
+        
         if aceita_prazo == 'sim':
             prazo_final = "Atende"
             motivo_prazo = "Dentro do prazo solicitado"
         else:
             # Captura o valor do input type="date" (Formato AAAA-MM-DD)
             data_raw = request.POST.get('prazo_entrega_data')
+            logger.debug(f"prazo_entrega_data: {data_raw}")
             if data_raw:
                 # Converte para formato brasileiro para salvar como string no banco
                 prazo_final = datetime.strptime(data_raw, '%Y-%m-%d').strftime('%d/%m/%Y')
@@ -4080,12 +4210,15 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
 
         # --- 2. PROCESSAMENTO DA CONDIÇÃO DE PAGAMENTO ---
         aceita_pgto = request.POST.get('aceita_pagamento')
+        logger.debug(f"aceita_pagamento: {aceita_pgto}")
+        
         if aceita_pgto == 'sim':
             pgto_final = "Atende"
             motivo_pgto = "Conforme solicitado"
         else:
             forma_codigo = request.POST.get('nova_forma_pagamento')
             dias = request.POST.get('novo_prazo_dias')
+            logger.debug(f"nova_forma_pagamento: {forma_codigo}, novo_prazo_dias: {dias}")
             
             # Mapeamento de códigos para nomes formatados
             formas_pagamento_dict = {
@@ -4141,7 +4274,7 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
                     defaults={
                         'prazo_entrega': prazo_final,
                         'condicao_pagamento': pgto_final,
-                        'valor_frete': request.POST.get('valor_frete') or 0,
+                        'valor_frete': Decimal(str(request.POST.get('valor_frete') or '0').replace(',', '.')),
                         'endereco_entrega_id': endereco_entrega_id,
                         'conformidade': conf,
                         'motivo_divergencia_prazo': motivo_prazo,
@@ -4149,7 +4282,7 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
                         'origem': 'portal',
                         'registrado_por': request.user,
                         # Salva o estado original para comparação no dashboard do escritório
-                        'prazo_original_escritorio': solicitacao.data_necessidade.strftime('%d/%m/%Y'),
+                        'prazo_original_escritorio': solicitacao.data_necessidade.strftime('%d/%m/%Y') if solicitacao.data_necessidade else '',
                         'pagamento_original_escritorio': f"{solicitacao.envios_cotacao.first().get_forma_pagamento_display()} / {solicitacao.envios_cotacao.first().prazo_pagamento} dias" if solicitacao.envios_cotacao.exists() else "Padronizado"
                     }
                 )
@@ -4163,39 +4296,74 @@ def responder_cotacao_fornecedor(request, solicitacao_id):
                 # Processa apenas os itens que foram enviados para este fornecedor específico
                 for item_sol in envio.itens.all():
                     preco_raw = request.POST.get(f'preco_{item_sol.id}')
+                    logger.debug(f"Item {item_sol.id} ({item_sol.descricao}): preco_raw = '{preco_raw}'")
                     if preco_raw:
                         # Limpa a formatação da máscara de dinheiro (remove pontos e troca vírgula por ponto)
                         preco_limpo = preco_raw.replace('.', '').replace(',', '.')
-                        ItemCotacao.objects.update_or_create(
-                            cotacao=cotacao,
-                            item_solicitacao=item_sol,
-                            defaults={'preco': float(preco_limpo)}
-                        )
+                        logger.debug(f"  -> preco_limpo = '{preco_limpo}'")
+                        try:
+                            preco_decimal = Decimal(preco_limpo)
+                            logger.debug(f"  -> preco_decimal = {preco_decimal}")
+                            ItemCotacao.objects.update_or_create(
+                                cotacao=cotacao,
+                                item_solicitacao=item_sol,
+                                defaults={'preco': preco_decimal}
+                            )
+                        except (ValueError, decimal.InvalidOperation) as e:
+                            logger.error(f"Erro ao converter preço '{preco_raw}' -> '{preco_limpo}': {e}")
+                            raise Exception(f"Preço inválido para item {item_sol.descricao}: {preco_raw}")
             
             # NOTIFICAÇÕES - FASE 1
-            # 1. Notifica almoxarife do escritório
-            criar_notificacao_sistema(
-                destinatario_perfil='almoxarife_escritorio',
-                titulo="📨 Nova Cotação Recebida",
-                mensagem=f"Fornecedor {fornecedor.nome_fantasia} respondeu a SC {solicitacao.numero}. Total: R$ {cotacao.valor_total}",
-                link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
-            )
+            # Detecta se é edição (update) ou nova cotação (created)
+            if created:
+                # Nova cotação
+                # 1. Notifica almoxarife do escritório
+                criar_notificacao_sistema(
+                    destinatario_perfil='almoxarife_escritorio',
+                    titulo="📨 Nova Cotação Recebida",
+                    mensagem=f"Fornecedor {fornecedor.nome_fantasia} respondeu a SC {solicitacao.numero}. Total: R$ {cotacao.valor_total}",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+                )
+                
+                # 2. Notifica diretor
+                criar_notificacao_sistema(
+                    destinatario_perfil='diretor',
+                    titulo="Cotação Recebida",
+                    mensagem=f"SC {solicitacao.numero}: {fornecedor.nome_fantasia} enviou proposta de R$ {cotacao.valor_total}",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+                )
+            else:
+                # Edição de cotação existente
+                # 1. Notifica o usuário do escritório que criou a SC (se não for almoxarife)
+                if solicitacao.solicitante.perfil != 'almoxarife_escritorio':
+                    criar_notificacao_sistema(
+                        destinatario_usuario=solicitacao.solicitante,
+                        titulo="✏️ Cotação Atualizada",
+                        mensagem=f"O fornecedor {fornecedor.nome_fantasia} atualizou sua cotação para SC {solicitacao.numero}. Novo total: R$ {cotacao.valor_total}",
+                        link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+                    )
+                
+                # 2. Notifica almoxarife do escritório
+                criar_notificacao_sistema(
+                    destinatario_perfil='almoxarife_escritorio',
+                    titulo="Cotação Atualizada",
+                    mensagem=f"{fornecedor.nome_fantasia} editou sua cotação da SC {solicitacao.numero}. Total: R$ {cotacao.valor_total}",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
+                )
             
-            # 2. Notifica diretor
-            criar_notificacao_sistema(
-                destinatario_perfil='diretor',
-                titulo="Cotação Recebida",
-                mensagem=f"SC {solicitacao.numero}: {fornecedor.nome_fantasia} enviou proposta de R$ {cotacao.valor_total}",
-                link=reverse('materiais:gerenciar_cotacoes') + '?tab=recebidas'
-            )
-            
-            # 3. Verifica alteração de prazo
+            # 3. Verifica alteração de prazo (em ambos os casos)
             if prazo_final and prazo_final != "Atende":
                 notificar_alteracao_prazo(
                     solicitacao=solicitacao,
                     prazo_fornecedor_str=prazo_final,
                     fornecedor_nome=fornecedor.nome_fantasia
                 )
+            
+            logger.debug(f"=== COTAÇÃO SALVA COM SUCESSO ===")
+            logger.debug(f"Cotacao ID: {cotacao.id}")
+            logger.debug(f"Prazo: {cotacao.prazo_entrega}")
+            logger.debug(f"Pagamento: {cotacao.condicao_pagamento}")
+            logger.debug(f"Itens salvos: {cotacao.itens_cotados.count()}")
             
             messages.success(request, "Cotação registrada e enviada com sucesso!")
             return redirect('materiais:dashboard_fornecedor')
@@ -4305,6 +4473,23 @@ def fornecedor_excluir_propria_cotacao(request, solicitacao_id):
                     usuario=request.user,
                     acao="Preços Removidos pelo Fornecedor",
                     detalhes=f"O fornecedor {nome_fornecedor} excluiu sua proposta de preços. Status revertido para Em Aberto."
+                )
+                
+                # NOTIFICAÇÕES - Notifica o usuário do escritório que criou a SC (se não for almoxarife)
+                if solicitacao.solicitante.perfil != 'almoxarife_escritorio':
+                    criar_notificacao_sistema(
+                        destinatario_usuario=solicitacao.solicitante,
+                        titulo="🗑️ Cotação Excluída pelo Fornecedor",
+                        mensagem=f"O fornecedor {nome_fornecedor} excluiu sua cotação para SC {solicitacao.numero}.",
+                        link=reverse('materiais:gerenciar_cotacoes') + '?tab=aguardando'
+                    )
+                
+                # Notifica almoxarife do escritório
+                criar_notificacao_sistema(
+                    destinatario_perfil='almoxarife_escritorio',
+                    titulo="Cotação Excluída",
+                    mensagem=f"{nome_fornecedor} removeu sua cotação da SC {solicitacao.numero}.",
+                    link=reverse('materiais:gerenciar_cotacoes') + '?tab=aguardando'
                 )
 
             messages.success(request, "Seus preços foram removidos. Você pode enviar uma nova proposta quando desejar.")
@@ -4553,3 +4738,373 @@ def api_solicitacao_meta(request, solicitacao_id):
         return JsonResponse({'success': False, 'erro': 'SC não encontrada'}, status=404)
     except Exception as e:
         return JsonResponse({'success': False, 'erro': str(e)}, status=500)
+
+# ==================== MENSAGENS PERSONALIZADAS ====================
+
+@login_required
+def gerenciar_mensagens(request):
+    """Lista e gerencia mensagens personalizadas"""
+    if request.user.perfil not in ['diretor', 'almoxarife_escritorio']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    from materiais.models import MensagemPersonalizada
+    
+    mensagens = MensagemPersonalizada.objects.all().order_by('categoria', 'tipo')
+    
+    # Cria mensagens padrão se não existirem
+    if mensagens.count() < 17:  # Total de mensagens esperadas
+        templates_padrao = [
+            # NOTIFICAÇÕES INTERNAS
+            {
+                'tipo': 'sc_criada_diretor',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'Nova SC {numero_sc} criada por {solicitante} para aprovação.\nObra: {obra}\nJustificativa: {justificativa}',
+                'variaveis_disponiveis': '{numero_sc}, {solicitante}, {obra}, {justificativa}'
+            },
+            {
+                'tipo': 'sc_aprovada_escritorio',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'SC {numero_sc} foi aprovada e está pronta para cotação.\nObra: {obra}\nItens: {quantidade_itens}',
+                'variaveis_disponiveis': '{numero_sc}, {obra}, {quantidade_itens}'
+            },
+            {
+                'tipo': 'sc_editada_escritorio',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'Sua SC {numero_sc} foi editada por {editor}.\nObra: {obra}',
+                'variaveis_disponiveis': '{numero_sc}, {editor}, {obra}'
+            },
+            {
+                'tipo': 'cotacao_recebida_almoxarife',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'Fornecedor {fornecedor} respondeu a SC {numero_sc}.\nTotal: R$ {valor_total}',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}, {valor_total}'
+            },
+            {
+                'tipo': 'cotacao_atualizada',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': '{fornecedor} atualizou sua cotação para SC {numero_sc}.\nNovo total: R$ {valor_total}',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}, {valor_total}'
+            },
+            {
+                'tipo': 'cotacao_excluida',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': '{fornecedor} removeu sua cotação da SC {numero_sc}.',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}'
+            },
+            {
+                'tipo': 'rm_aprovada_solicitante',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'Sua RM {numero_rm} foi aprovada e está pronta para retirada.\nLocal: {destino}\nItens: {quantidade_itens}',
+                'variaveis_disponiveis': '{numero_rm}, {destino}, {quantidade_itens}'
+            },
+            {
+                'tipo': 'recebimento_registrado',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'Recebimento parcial registrado para RM {numero_rm}.\nRecebido por: {recebedor}',
+                'variaveis_disponiveis': '{numero_rm}, {recebedor}'
+            },
+            {
+                'tipo': 'lembrete_cotacao_pendente',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': 'Lembrete: Cotação pendente para SC {numero_sc}.\nPrazo: {prazo_resposta}',
+                'variaveis_disponiveis': '{numero_sc}, {prazo_resposta}'
+            },
+            {
+                'tipo': 'fornecedor_visualizou_portal',
+                'categoria': 'notificacao_interna',
+                'assunto': '',
+                'corpo': '{fornecedor} acessou o portal de cotações.',
+                'variaveis_disponiveis': '{fornecedor}'
+            },
+            
+            # E-MAILS PARA FORNECEDORES
+            {
+                'tipo': 'email_convite_cotacao',
+                'categoria': 'email_fornecedor',
+                'assunto': 'Solicitação de Cotação - SC {numero_sc}',
+                'corpo': '''Prezado(a) {fornecedor},
+
+A Boa Vista Construtora convida sua empresa a participar da cotação referente à SC {numero_sc}.
+
+Obra: {obra}
+Prazo de Entrega: {prazo_entrega}
+Forma de Pagamento: {forma_pagamento}
+
+Por favor, responda até {prazo_resposta}.
+
+Acesse o portal: {link_portal}
+
+Atenciosamente,
+Departamento de Compras
+Boa Vista Construtora''',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}, {obra}, {prazo_entrega}, {forma_pagamento}, {prazo_resposta}, {link_portal}'
+            },
+            {
+                'tipo': 'email_lembrete_cotacao',
+                'categoria': 'email_fornecedor',
+                'assunto': 'Lembrete - Cotação Pendente SC {numero_sc}',
+                'corpo': '''Prezado(a) {fornecedor},
+
+Este é um lembrete sobre a cotação pendente da SC {numero_sc}.
+
+Prazo final: {prazo_resposta}
+
+Por favor, responda o mais breve possível através do portal.
+
+Atenciosamente,
+Departamento de Compras''',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}, {prazo_resposta}'
+            },
+            {
+                'tipo': 'email_cotacao_aprovada',
+                'categoria': 'email_fornecedor',
+                'assunto': 'Parabéns! Sua Cotação foi Aprovada - SC {numero_sc}',
+                'corpo': '''Prezado(a) {fornecedor},
+
+Informamos que sua cotação para a SC {numero_sc} foi APROVADA!
+
+Valor Total: R$ {valor_total}
+Obra: {obra}
+
+Em breve entraremos em contato com a Requisição de Material (RM) oficial.
+
+Atenciosamente,
+Departamento de Compras''',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}, {valor_total}, {obra}'
+            },
+            {
+                'tipo': 'email_cotacao_rejeitada',
+                'categoria': 'email_fornecedor',
+                'assunto': 'Cotação Não Aprovada - SC {numero_sc}',
+                'corpo': '''Prezado(a) {fornecedor},
+
+Informamos que sua cotação para a SC {numero_sc} não foi selecionada desta vez.
+
+Motivo: {motivo}
+
+Agradecemos sua participação e esperamos contar com você em futuras oportunidades.
+
+Atenciosamente,
+Departamento de Compras''',
+                'variaveis_disponiveis': '{fornecedor}, {numero_sc}, {motivo}'
+            },
+            {
+                'tipo': 'email_rm_enviada',
+                'categoria': 'email_fornecedor',
+                'assunto': 'Requisição de Material - RM {numero_rm}',
+                'corpo': '''Prezado(a) {fornecedor},
+
+Segue Requisição de Material RM {numero_rm}.
+
+Obra: {obra}
+Total: R$ {valor_total}
+Prazo de Entrega: {prazo_entrega}
+
+O documento completo está em anexo.
+
+Atenciosamente,
+Departamento de Compras''',
+                'variaveis_disponiveis': '{fornecedor}, {numero_rm}, {obra}, {valor_total}, {prazo_entrega}'
+            },
+            
+            # E-MAILS PARA USUÁRIOS
+            {
+                'tipo': 'email_sc_rejeitada',
+                'categoria': 'email_usuario',
+                'assunto': 'SC {numero_sc} foi Rejeitada',
+                'corpo': '''Prezado(a) {solicitante},
+
+Sua Solicitação de Compra {numero_sc} foi REJEITADA pela diretoria.
+
+Motivo: {motivo}
+
+Por favor, revise e crie uma nova solicitação se necessário.
+
+Atenciosamente,
+Sistema de Gestão de Obras''',
+                'variaveis_disponiveis': '{solicitante}, {numero_sc}, {motivo}'
+            },
+            {
+                'tipo': 'email_rm_aprovada',
+                'categoria': 'email_usuario',
+                'assunto': 'RM {numero_rm} Aprovada e Disponível',
+                'corpo': '''Prezado(a) {solicitante},
+
+Sua Requisição de Material {numero_rm} foi aprovada e está disponível para retirada.
+
+Local: {destino}
+Fornecedor: {fornecedor}
+Itens: {quantidade_itens}
+
+Apresente este documento no momento da retirada.
+
+Atenciosamente,
+Departamento de Compras''',
+                'variaveis_disponiveis': '{solicitante}, {numero_rm}, {destino}, {fornecedor}, {quantidade_itens}'
+            },
+        ]
+        
+        for template in templates_padrao:
+            MensagemPersonalizada.objects.get_or_create(
+                tipo=template['tipo'],
+                defaults=template
+            )
+        
+        mensagens = MensagemPersonalizada.objects.all().order_by('categoria', 'tipo')
+    
+    # Agrupa mensagens por categoria
+    notificacoes_internas = mensagens.filter(categoria='notificacao_interna')
+    emails_fornecedores = mensagens.filter(categoria='email_fornecedor')
+    emails_usuarios = mensagens.filter(categoria='email_usuario')
+    
+    return render(request, 'materiais/gerenciar_mensagens.html', {
+        'notificacoes_internas': notificacoes_internas,
+        'emails_fornecedores': emails_fornecedores,
+        'emails_usuarios': emails_usuarios,
+    })
+
+
+@login_required
+def editar_mensagem(request, mensagem_id):
+    """Edita uma mensagem personalizada"""
+    if request.user.perfil not in ['diretor', 'almoxarife_escritorio']:
+        messages.error(request, 'Acesso negado.')
+        return redirect('materiais:dashboard')
+    
+    from materiais.models import MensagemPersonalizada
+    mensagem = get_object_or_404(MensagemPersonalizada, id=mensagem_id)
+    
+    if request.method == 'POST':
+        try:
+            # Captura dados do formulário
+            assunto = request.POST.get('assunto', '').strip()
+            corpo = request.POST.get('corpo', '').strip()
+            ativo = request.POST.get('ativo') == 'on'
+            
+            # Validações básicas
+            if not corpo:
+                messages.error(request, 'O corpo da mensagem não pode estar vazio.')
+                return render(request, 'materiais/editar_mensagem.html', {'mensagem': mensagem})
+            
+            # Valida assunto para emails
+            if mensagem.categoria in ['email_fornecedor', 'email_usuario'] and not assunto:
+                messages.error(request, 'O assunto é obrigatório para mensagens de e-mail.')
+                return render(request, 'materiais/editar_mensagem.html', {'mensagem': mensagem})
+            
+            # Atualiza os campos
+            mensagem.assunto = assunto
+            mensagem.corpo = corpo
+            mensagem.ativo = ativo
+            mensagem.save()
+            
+            # Log da alteração
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f'Mensagem {mensagem.tipo} editada por {request.user.username}')
+            
+            messages.success(request, f'✓ Mensagem "{mensagem.get_tipo_display()}" atualizada com sucesso!')
+            return redirect('materiais:gerenciar_mensagens')
+            
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f'Erro ao salvar mensagem {mensagem_id}: {str(e)}')
+            messages.error(request, f'Erro ao salvar: {e}')
+            return render(request, 'materiais/editar_mensagem.html', {'mensagem': mensagem})
+    
+    return render(request, 'materiais/editar_mensagem.html', {'mensagem': mensagem})
+
+
+
+@login_required
+def visualizar_solicitacao(request, solicitacao_id):
+    """Exibe detalhes completos de uma solicitação de compra"""
+    solicitacao = get_object_or_404(SolicitacaoCompra.objects.select_related('obra', 'solicitante'), id=solicitacao_id)
+    
+    # Verifica permissões
+    if request.user.perfil not in ['diretor', 'almoxarife_escritorio']:
+        if request.user != solicitacao.solicitante:
+            messages.error(request, 'Acesso negado.')
+            return redirect('materiais:dashboard')
+    
+    context = {
+        'solicitacao': solicitacao,
+        'itens': solicitacao.itens.all(),
+        'cotacoes': solicitacao.cotacoes.all(),
+        'historico': solicitacao.historicos.all().order_by('-data')[:10]
+    }
+    return render(request, 'materiais/visualizar_solicitacao.html', context)
+
+
+@login_required
+def marcar_notificacao_lida(request, notificacao_id):
+    """Marca uma notificação como lida"""
+    try:
+        notificacao = Notificacao.objects.get(id=notificacao_id)
+        
+        # Verifica se a notificação pertence ao usuário
+        if notificacao.usuario_destino != request.user:
+            messages.error(request, 'Acesso negado.')
+            return redirect('materiais:dashboard')
+        
+        notificacao.lida = True
+        notificacao.save()
+        
+        # Redireciona para o link da notificação ou para histórico
+        if notificacao.link:
+            return redirect(notificacao.link)
+        else:
+            return redirect('materiais:historico_notificacoes')
+            
+    except Notificacao.DoesNotExist:
+        messages.error(request, 'Notificação não encontrada.')
+        return redirect('materiais:historico_notificacoes')
+
+
+@login_required
+def historico_notificacoes(request):
+    """Exibe histórico completo de notificações do usuário"""
+    # Busca notificações do usuário
+    notificacoes = Notificacao.objects.filter(
+        usuario_destino=request.user
+    ).order_by('-data_criacao')
+    
+    # Paginação
+    from django.core.paginator import Paginator
+    paginator = Paginator(notificacoes, 20)
+    page = request.GET.get('page', 1)
+    
+    try:
+        notificacoes_pag = paginator.page(page)
+    except:
+        notificacoes_pag = paginator.page(1)
+    
+    context = {
+        'notificacoes': notificacoes_pag,
+        'total': notificacoes.count(),
+        'nao_lidas': notificacoes.filter(lida=False).count()
+    }
+    return render(request, 'materiais/historico_notificacoes.html', context)
+
+
+@login_required
+def marcar_todas_lidas(request):
+    """Marca todas as notificações do usuário como lidas"""
+    Notificacao.objects.filter(
+        usuario_destino=request.user,
+        lida=False
+    ).update(lida=True)
+    
+    messages.success(request, 'Todas as notificações foram marcadas como lidas.')
+    return redirect('materiais:historico_notificacoes')
+

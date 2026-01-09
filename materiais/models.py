@@ -715,3 +715,64 @@ class ConfiguracaoWhatsApp(models.Model):
     def __str__(self):
         return f"WhatsApp {'Ativo' if self.ativo else 'Inativo'}"
 
+
+class MensagemPersonalizada(models.Model):
+    """Templates de mensagens personalizáveis para emails e notificações"""
+    
+    CATEGORIA_CHOICES = [
+        ('notificacao_interna', 'Notificação Interna do Sistema'),
+        ('email_fornecedor', 'E-mail para Fornecedor'),
+        ('email_usuario', 'E-mail para Usuário Interno'),
+    ]
+    
+    TIPO_MENSAGEM_CHOICES = [
+        # Notificações Internas
+        ('sc_criada_diretor', 'SC Criada - Notificação Diretor'),
+        ('sc_aprovada_escritorio', 'SC Aprovada - Notificação Escritório'),
+        ('sc_editada_escritorio', 'SC Editada - Notificação Solicitante'),
+        ('cotacao_recebida_almoxarife', 'Cotação Recebida - Notificação Almoxarife'),
+        ('cotacao_atualizada', 'Cotação Atualizada - Notificação Escritório'),
+        ('cotacao_excluida', 'Cotação Excluída - Notificação Escritório'),
+        ('rm_aprovada_solicitante', 'RM Aprovada - Notificação Solicitante'),
+        ('recebimento_registrado', 'Recebimento Registrado - Notificação'),
+        ('lembrete_cotacao_pendente', 'Lembrete - Cotação Pendente'),
+        ('fornecedor_visualizou_portal', 'Fornecedor Acessou Portal'),
+        
+        # E-mails para Fornecedores
+        ('email_convite_cotacao', 'E-mail - Convite para Cotação'),
+        ('email_lembrete_cotacao', 'E-mail - Lembrete de Cotação Pendente'),
+        ('email_cotacao_aprovada', 'E-mail - Sua Cotação foi Aprovada'),
+        ('email_cotacao_rejeitada', 'E-mail - Cotação Não Aprovada'),
+        ('email_rm_enviada', 'E-mail - Requisição de Material Enviada'),
+        
+        # E-mails para Usuários
+        ('email_sc_rejeitada', 'E-mail - SC Rejeitada pelo Diretor'),
+        ('email_rm_aprovada', 'E-mail - RM Aprovada e Disponível'),
+    ]
+    
+    tipo = models.CharField(max_length=50, choices=TIPO_MENSAGEM_CHOICES, unique=True)
+    categoria = models.CharField(max_length=30, choices=CATEGORIA_CHOICES, default='notificacao_interna')
+    assunto = models.CharField(max_length=200, blank=True, help_text="Assunto do email (obrigatório para e-mails)")
+    corpo = models.TextField(help_text="Corpo da mensagem. Use {variavel} para substituições dinâmicas.")
+    variaveis_disponiveis = models.TextField(
+        blank=True,
+        help_text="Lista de variáveis disponíveis para este template (ex: {numero_sc}, {solicitante}, {obra})"
+    )
+    ativo = models.BooleanField(default=True)
+    data_criacao = models.DateTimeField(auto_now_add=True)
+    ultima_edicao = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "Mensagem Personalizada"
+        verbose_name_plural = "Mensagens Personalizadas"
+        ordering = ['categoria', 'tipo']
+    
+    def __str__(self):
+        return f"{self.get_tipo_display()}"
+    
+    def renderizar(self, contexto):
+        """Substitui variáveis no corpo da mensagem com valores reais"""
+        corpo_renderizado = self.corpo
+        for chave, valor in contexto.items():
+            corpo_renderizado = corpo_renderizado.replace(f"{{{chave}}}", str(valor))
+        return corpo_renderizado

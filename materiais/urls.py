@@ -19,7 +19,8 @@ path('dashboard/', views.dashboard, name='dashboard'),
     path('solicitacoes/', views.lista_solicitacoes, name='lista_solicitacoes'),  
     path('nova-solicitacao/', views.nova_solicitacao, name='nova_solicitacao'),  
     path('analisar-solicitacoes/', views.analisar_solicitacoes, name='analisar_solicitacoes'),  
-    path('editar-solicitacao/<int:solicitacao_id>/', views.editar_solicitacao, name='editar_solicitacao'),  
+    path('editar-solicitacao/<int:solicitacao_id>/', views.editar_solicitacao, name='editar_solicitacao'),
+    path('solicitacao/<int:solicitacao_id>/', views.visualizar_solicitacao, name='visualizar_solicitacao'),
     path('solicitacao/<int:solicitacao_id>/confirmar-envios/', views.confirmar_envios_cotacao, name='confirmar_envios_cotacao'),  
   
     path('aprovar-solicitacao/<int:solicitacao_id>/', views.aprovar_solicitacao, name='aprovar_solicitacao'),  
@@ -67,7 +68,10 @@ path('dashboard/', views.dashboard, name='dashboard'),
       
     path('cadastrar-itens/', views.cadastrar_itens, name='cadastrar_itens'),  
     path('editar-item/<int:item_id>/', views.editar_item, name='editar_item'),  
-    path('cadastrar-obras/', views.cadastrar_obras, name='cadastrar_obras'),  
+    path('cadastrar-obras/', views.cadastrar_obras, name='cadastrar_obras'),
+    path('lista-obras/', views.lista_obras, name='lista_obras'),
+    path('editar-obra/<int:obra_id>/', views.editar_obra, name='editar_obra'),
+    path('excluir-obra/<int:obra_id>/', views.excluir_obra, name='excluir_obra'),
     path('gerenciar-fornecedores/', views.gerenciar_fornecedores, name='gerenciar_fornecedores'),  
     path('gerenciar-categorias/', views.gerenciar_categorias, name='gerenciar_categorias'),  
       
@@ -108,5 +112,14 @@ path('dashboard/', views.dashboard, name='dashboard'),
     
     # WhatsApp
     path('api/whatsapp/testar/', views.testar_whatsapp, name='testar_whatsapp'),
+    
+    # Mensagens Personalizadas
+    path('mensagens/', views.gerenciar_mensagens, name='gerenciar_mensagens'),
+    path('mensagens/<int:mensagem_id>/editar/', views.editar_mensagem, name='editar_mensagem'),
     path('api/solicitacao-meta/<int:solicitacao_id>/', views.api_solicitacao_meta, name='api_solicitacao_meta'),
+    
+    # Notificações
+    path('notificacoes/', views.historico_notificacoes, name='historico_notificacoes'),
+    path('notificacao/lida/<int:notificacao_id>/', views.marcar_notificacao_lida, name='marcar_notificacao_lida'),
+    path('notificacoes/marcar-todas-lidas/', views.marcar_todas_lidas, name='marcar_todas_lidas'),
 ]

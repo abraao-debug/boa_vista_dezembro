@@ -1,0 +1,399 @@
+{% extends 'materiais/base.html' %}
+{% load materiais_extras %}
+{% block title %}Gerenciar Mensagens{% endblock %}
+
+{% block content %}
+<style>
+    .mensagem-card { 
+        transition: all 0.2s; 
+        border-left: 4px solid #0d6efd; 
+        border-radius: 0.5rem;
+    }
+    .mensagem-card:hover { 
+        transform: translateY(-2px); 
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
+    }
+    .mensagem-card.inativa { 
+        opacity: 0.6; 
+        border-left-color: #6c757d; 
+    }
+    .badge-variavel { 
+        font-size: 0.7rem; 
+        background-color: #e9ecef; 
+        color: #495057; 
+    }
+    
+    /* Estilo dos filtros (inspirado em gerenciar_cotacoes) */
+    .filter-card {
+        padding: 1rem;
+        transition: all 0.2s ease-in-out;
+        border: 2px solid #e9ecef;
+        background-color: #fff;
+        cursor: pointer;
+        border-radius: 0.5rem;
+        text-decoration: none;
+        color: #212529;
+    }
+    .filter-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .filter-card.active {
+        border-color: currentColor;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        transform: translateY(-3px);
+    }
+    .filter-card .count {
+        font-size: 2.2rem;
+        font-weight: bold;
+        line-height: 1;
+    }
+    .filter-card .title {
+        font-size: 0.9rem;
+        margin-top: 0.5rem;
+        font-weight: 500;
+    }
+    .filter-card.filter-notificacoes.active {
+        background: linear-gradient(135deg, #e3f2fd 0%, #f8f9fa 100%);
+        border-color: #0d6efd;
+    }
+    .filter-card.filter-fornecedores.active {
+        background: linear-gradient(135deg, #e8f5e9 0%, #f8f9fa 100%);
+        border-color: #198754;
+    }
+    .filter-card.filter-usuarios.active {
+        background: linear-gradient(135deg, #fff9e6 0%, #f8f9fa 100%);
+        border-color: #ffc107;
+    }
+    
+    /* Transições suaves */
+    .categoria-section {
+        transition: opacity 0.3s ease, max-height 0.3s ease;
+        overflow: hidden;
+    }
+    .categoria-section.hidden {
+        opacity: 0;
+        max-height: 0;
+        margin: 0;
+        padding: 0;
+    }
+</style>
+
+<div class="d-flex align-items-center mb-3">
+    <a href="{% url 'materiais:dashboard' %}" class="btn btn-secondary me-3">
+        <i class="fas fa-arrow-left"></i> Voltar
+    </a>
+    <div class="flex-grow-1">
+        <h4 class="mb-0">Gerenciar Mensagens</h4>
+        <p class="text-muted mb-0 small">Personalize os templates de notificações e emails do sistema</p>
+    </div>
+</div>
+<hr class="mb-4">
+
+<!-- FILTROS INTERATIVOS -->
+<div class="row mb-4 g-3">
+    <div class="col-md-3">
+        <div class="filter-card filter-todos active" onclick="filtrarCategoria('todos')" style="border-color: #6c757d;">
+            <div class="count text-secondary">{{ notificacoes_internas.count|add:emails_fornecedores.count|add:emails_usuarios.count }}</div>
+            <div class="title">
+                <i class="fas fa-list me-1"></i> Todas as Mensagens
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="filter-card filter-notificacoes" onclick="filtrarCategoria('notificacoes')">
+            <div class="count text-primary">{{ notificacoes_internas.count }}</div>
+            <div class="title">
+                <i class="fas fa-bell me-1"></i> Notificações Internas
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="filter-card filter-fornecedores" onclick="filtrarCategoria('fornecedores')">
+            <div class="count text-success">{{ emails_fornecedores.count }}</div>
+            <div class="title">
+                <i class="fas fa-envelope me-1"></i> E-mails Fornecedores
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="filter-card filter-usuarios" onclick="filtrarCategoria('usuarios')">
+            <div class="count text-warning">{{ emails_usuarios.count }}</div>
+            <div class="title">
+                <i class="fas fa-paper-plane me-1"></i> E-mails Usuários
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-info">
+    <i class="fas fa-info-circle me-2"></i>
+    <strong>Como usar:</strong> Use os filtros acima para visualizar categorias específicas. 
+    Clique em "Editar" para personalizar o texto das mensagens. 
+    Use variáveis como <code>{numero_sc}</code> que serão substituídas automaticamente pelos valores reais.
+</div>
+
+
+<!-- NOTIFICAÇÕES INTERNAS -->
+<div class="categoria-section section-notificacoes">
+    <h5 class="mb-3 mt-4">
+        <i class="fas fa-bell text-primary me-2"></i>
+        Notificações Internas do Sistema 
+        <span class="badge bg-primary">{{ notificacoes_internas.count }}</span>
+    </h5>
+    <div class="row">
+        {% for mensagem in notificacoes_internas %}
+        <div class="col-md-6 mb-3">
+            <div class="card mensagem-card shadow-sm {% if not mensagem.ativo %}inativa{% endif %}" style="border-left-color: #0d6efd;">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                    <div>
+                        <h6 class="mb-0">{{ mensagem.get_tipo_display }}</h6>
+                    </div>
+                    <div>
+                        {% if not mensagem.ativo %}
+                        <span class="badge bg-secondary me-2">Inativa</span>
+                        {% endif %}
+                        <span class="badge bg-primary">Notificação</span>
+                    </div>
+                </div>
+                
+                <div class="card-body">
+                    <div class="mb-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">CORPO DA MENSAGEM:</label>
+                        <div class="bg-light p-2 rounded border" style="max-height: 120px; overflow-y: auto;">
+                            <small style="white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 0.8rem;">{{ mensagem.corpo|truncatewords:40 }}</small>
+                        </div>
+                    </div>
+                    
+                    {% if mensagem.variaveis_disponiveis %}
+                    <div class="mt-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">VARIÁVEIS DISPONÍVEIS:</label>
+                        <div>
+                            {% for var in mensagem.variaveis_disponiveis|split:',' %}
+                            <span class="badge badge-variavel me-1 mb-1">{{ var }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="card-footer bg-white border-top d-flex justify-content-between align-items-center py-2">
+                    <small class="text-muted">
+                        <i class="fas fa-tag me-1"></i>{{ mensagem.tipo }}
+                    </small>
+                    <a href="{% url 'materiais:editar_mensagem' mensagem.id %}" class="btn btn-sm btn-primary">
+                        <i class="fas fa-edit me-1"></i>Editar
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% empty %}
+        <div class="col-12"><div class="alert alert-warning">Nenhuma notificação interna cadastrada.</div></div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- E-MAILS PARA FORNECEDORES -->
+<div class="categoria-section section-fornecedores">
+    <h5 class="mb-3 mt-4">
+        <i class="fas fa-envelope text-success me-2"></i>
+        E-mails para Fornecedores
+        <span class="badge bg-success">{{ emails_fornecedores.count }}</span>
+    </h5>
+    <div class="row">
+        {% for mensagem in emails_fornecedores %}
+        <div class="col-md-6 mb-3">
+            <div class="card mensagem-card shadow-sm {% if not mensagem.ativo %}inativa{% endif %}" style="border-left-color: #198754;">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                    <div>
+                        <h6 class="mb-0">{{ mensagem.get_tipo_display }}</h6>
+                        {% if mensagem.assunto %}
+                        <small class="text-muted"><i class="fas fa-envelope-open me-1"></i>{{ mensagem.assunto|truncatewords:8 }}</small>
+                        {% endif %}
+                    </div>
+                    <div>
+                        {% if not mensagem.ativo %}
+                        <span class="badge bg-secondary me-2">Inativa</span>
+                        {% endif %}
+                        <span class="badge bg-success">E-mail</span>
+                    </div>
+                </div>
+                
+                <div class="card-body">
+                    {% if mensagem.assunto %}
+                    <div class="mb-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">ASSUNTO:</label>
+                        <div class="bg-light p-2 rounded border">
+                            <small class="fw-bold">{{ mensagem.assunto }}</small>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <div class="mb-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">CORPO DO E-MAIL:</label>
+                        <div class="bg-light p-2 rounded border" style="max-height: 120px; overflow-y: auto;">
+                            <small style="white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 0.8rem;">{{ mensagem.corpo|truncatewords:40 }}</small>
+                        </div>
+                    </div>
+                    
+                    {% if mensagem.variaveis_disponiveis %}
+                    <div class="mt-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">VARIÁVEIS DISPONÍVEIS:</label>
+                        <div>
+                            {% for var in mensagem.variaveis_disponiveis|split:',' %}
+                            <span class="badge badge-variavel me-1 mb-1">{{ var }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="card-footer bg-white border-top d-flex justify-content-between align-items-center py-2">
+                    <small class="text-muted">
+                        <i class="fas fa-tag me-1"></i>{{ mensagem.tipo }}
+                    </small>
+                    <a href="{% url 'materiais:editar_mensagem' mensagem.id %}" class="btn btn-sm btn-success">
+                        <i class="fas fa-edit me-1"></i>Editar
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% empty %}
+        <div class="col-12"><div class="alert alert-warning">Nenhum e-mail para fornecedores cadastrado.</div></div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- E-MAILS PARA USUÁRIOS INTERNOS -->
+<div class="categoria-section section-usuarios">
+    <h5 class="mb-3 mt-4">
+        <i class="fas fa-paper-plane text-warning me-2"></i>
+        E-mails para Usuários Internos
+        <span class="badge bg-warning text-dark">{{ emails_usuarios.count }}</span>
+    </h5>
+    <div class="row">
+        {% for mensagem in emails_usuarios %}
+        <div class="col-md-6 mb-3">
+            <div class="card mensagem-card shadow-sm {% if not mensagem.ativo %}inativa{% endif %}" style="border-left-color: #ffc107;">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center py-2">
+                    <div>
+                        <h6 class="mb-0">{{ mensagem.get_tipo_display }}</h6>
+                        {% if mensagem.assunto %}
+                        <small class="text-muted"><i class="fas fa-envelope-open me-1"></i>{{ mensagem.assunto|truncatewords:8 }}</small>
+                        {% endif %}
+                    </div>
+                    <div>
+                        {% if not mensagem.ativo %}
+                        <span class="badge bg-secondary me-2">Inativa</span>
+                        {% endif %}
+                        <span class="badge bg-warning text-dark">E-mail</span>
+                    </div>
+                </div>
+                
+                <div class="card-body">
+                    {% if mensagem.assunto %}
+                    <div class="mb-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">ASSUNTO:</label>
+                        <div class="bg-light p-2 rounded border">
+                            <small class="fw-bold">{{ mensagem.assunto }}</small>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <div class="mb-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">CORPO DO E-MAIL:</label>
+                        <div class="bg-light p-2 rounded border" style="max-height: 120px; overflow-y: auto;">
+                            <small style="white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 0.8rem;">{{ mensagem.corpo|truncatewords:40 }}</small>
+                        </div>
+                    </div>
+                    
+                    {% if mensagem.variaveis_disponiveis %}
+                    <div class="mt-2">
+                        <label class="form-label small text-muted mb-1 fw-bold">VARIÁVEIS DISPONÍVEIS:</label>
+                        <div>
+                            {% for var in mensagem.variaveis_disponiveis|split:',' %}
+                            <span class="badge badge-variavel me-1 mb-1">{{ var }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <div class="card-footer bg-white border-top d-flex justify-content-between align-items-center py-2">
+                    <small class="text-muted">
+                        <i class="fas fa-tag me-1"></i>{{ mensagem.tipo }}
+                    </small>
+                    <a href="{% url 'materiais:editar_mensagem' mensagem.id %}" class="btn btn-sm btn-warning">
+                        <i class="fas fa-edit me-1"></i>Editar
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% empty %}
+        <div class="col-12"><div class="alert alert-warning">Nenhum e-mail para usuários internos cadastrado.</div></div>
+        {% endfor %}
+    </div>
+</div>
+
+<script>
+function filtrarCategoria(categoria) {
+    // Remove classe 'active' de todos os filtros
+    document.querySelectorAll('.filter-card').forEach(card => {
+        card.classList.remove('active');
+    });
+    
+    // Adiciona classe 'active' ao filtro clicado
+    const filtroClicado = document.querySelector(`.filter-${categoria}`);
+    if (filtroClicado) {
+        filtroClicado.classList.add('active');
+    }
+    
+    // Exibe/oculta seções conforme o filtro
+    const secoes = {
+        'notificacoes': document.querySelector('.section-notificacoes'),
+        'fornecedores': document.querySelector('.section-fornecedores'),
+        'usuarios': document.querySelector('.section-usuarios')
+    };
+    
+    if (categoria === 'todos') {
+        // Mostra todas as seções
+        Object.values(secoes).forEach(secao => {
+            if (secao) secao.classList.remove('hidden');
+        });
+    } else {
+        // Oculta todas e mostra apenas a selecionada
+        Object.entries(secoes).forEach(([key, secao]) => {
+            if (secao) {
+                if (key === categoria) {
+                    secao.classList.remove('hidden');
+                } else {
+                    secao.classList.add('hidden');
+                }
+            }
+        });
+    }
+    
+    // Scroll suave para o topo das mensagens
+    const primeiraSecaoVisivel = categoria === 'todos' 
+        ? secoes.notificacoes 
+        : secoes[categoria];
+    
+    if (primeiraSecaoVisivel && !primeiraSecaoVisivel.classList.contains('hidden')) {
+        setTimeout(() => {
+            primeiraSecaoVisivel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+    }
+}
+
+// Mantém o estado do filtro ao voltar da edição
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const filtro = urlParams.get('filtro');
+    if (filtro) {
+        filtrarCategoria(filtro);
+    }
+});
+</script>
+
+{% endblock %}
+

@@ -71,6 +71,27 @@
     </div>
 </div>
 
+<!-- Modal de Confirmação de Exclusão -->
+<div class="modal fade" id="modalConfirmarExclusao" tabindex="-1" aria-labelledby="modalConfirmarExclusaoLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow-lg border-0">
+            <div class="modal-header bg-danger text-white border-0 py-2">
+                <h6 class="modal-title"><i class="fas fa-trash-alt me-2"></i>Atenção: Ação Crítica</h6>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body p-4 text-center">
+                <i class="fas fa-exclamation-triangle fa-3x text-danger mb-3 opacity-50"></i>
+                <h5 class="mb-2 fw-normal">Confirmar Exclusão?</h5>
+                <p class="text-muted small mb-0" id="mensagemExclusao"></p>
+            </div>
+            <div class="modal-footer border-0 bg-light d-flex justify-content-center py-3">
+                <button type="button" class="btn btn-secondary btn-sm px-4" data-bs-dismiss="modal">CANCELAR</button>
+                <button type="button" class="btn btn-danger btn-sm px-4 fw-bold shadow-sm" id="btnConfirmarExclusaoFinal">SIM, EXCLUIR DEFINITIVAMENTE</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
     let formExclusaoPendente = null;
     function abrirModalExclusao(btn, tipo) {
